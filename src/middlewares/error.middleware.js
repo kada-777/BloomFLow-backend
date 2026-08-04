@@ -8,6 +8,14 @@ function notFound(req, res) {
 function errorHandler(error, req, res, next) {
   console.error(error);
 
+  if (error.statusCode) {
+    return res.status(error.statusCode).json({
+      success: false,
+      message: error.message,
+      ...(error.errors ? { errors: error.errors } : {}),
+    });
+  }
+
   res.status(500).json({
     success: false,
     message: "Internal server error",
