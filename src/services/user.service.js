@@ -1,6 +1,7 @@
 const bcrypt = require("bcryptjs");
 const prisma = require("../lib/prisma");
 const { HttpError } = require("../utils/http-error");
+const { buildPagination } = require("../utils/pagination");
 
 const userRoles = ["SUPERADMIN", "STAFF_HEAD_OFFICE", "STAFF_BRANCH"];
 const publicUserSelect = {
@@ -128,11 +129,18 @@ async function ensureValidBranch(branchId) {
   }
 }
 
-async function list() {
-  return prisma.user.findMany({
-    select: publicUserSelect,
-    orderBy: { email: "asc" },
-  });
+async function list(pagination) {
+  const [data, totalItems] = await prisma.$transaction([
+    prisma.user.findMany({
+      select: publicUserSelect,
+      orderBy: { email: "asc" },
+      skip: pagination.skip,
+      take: pagination.take,
+    }),
+    prisma.user.count(),
+  ]);
+
+  return { data, pagination: buildPagination(pagination.page, pagination.limit, totalItems) };
 }
 
 async function create(payload) {

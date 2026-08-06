@@ -3,6 +3,7 @@ jest.mock("../src/lib/prisma", () => ({
     findUnique: jest.fn(),
     findFirst: jest.fn(),
     findMany: jest.fn(),
+    count: jest.fn(),
     create: jest.fn(),
   },
   flower: { findMany: jest.fn() },
@@ -154,5 +155,24 @@ describe("create", () => {
         items: [{ flowerId: 1, soldQuantity: "10", damagedQuantity: "0" }],
       })
     ).rejects.toThrow();
+  });
+});
+
+describe("list", () => {
+  test("uses page offset, page size, and branch scope", async () => {
+    prisma.$transaction.mockResolvedValue([[{ id: 12, branchId: 7 }], 11]);
+
+    const result = await list(7, { page: 2, limit: 10, skip: 10, take: 10 });
+
+    expect(prisma.dailySale.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { branchId: 7 },
+      skip: 10,
+      take: 10,
+    }));
+    expect(prisma.dailySale.count).toHaveBeenCalledWith({ where: { branchId: 7 } });
+    expect(result).toEqual(expect.objectContaining({
+      data: [{ id: 12, branchId: 7 }],
+      pagination: expect.objectContaining({ page: 2, limit: 10, totalItems: 11, totalPages: 2 }),
+    }));
   });
 });

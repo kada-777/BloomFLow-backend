@@ -1,4 +1,3 @@
-const test = require("node:test");
 const assert = require("node:assert/strict");
 const service = require("../src/services/master-data.service");
 const userService = require("../src/services/user.service");

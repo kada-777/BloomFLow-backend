@@ -1,10 +1,11 @@
 const dailySalesService = require("../services/daily-sales.service");
+const { parsePagination } = require("../utils/pagination");
 
 async function listDailySales(req, res, next) {
   try {
     const branchId = req.user.role === "STAFF_BRANCH" ? req.user.branchId : undefined;
-    const data = await dailySalesService.list(branchId);
-    res.json({ success: true, data });
+    const result = await dailySalesService.list(branchId, parsePagination(req.query));
+    res.json({ success: true, ...result });
   } catch (err) {
     next(err);
   }

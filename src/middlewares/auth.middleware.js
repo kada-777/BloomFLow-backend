@@ -3,6 +3,7 @@ const { AuthenticationError, authenticateToken } = require("../services/auth.ser
 function unauthorized(res, message) {
   return res.status(401).json({
     success: false,
+    code: "UNAUTHORIZED",
     message,
   });
 }
@@ -10,6 +11,7 @@ function unauthorized(res, message) {
 function forbidden(res) {
   return res.status(403).json({
     success: false,
+    code: "FORBIDDEN",
     message: "You do not have permission to access this resource",
   });
 }

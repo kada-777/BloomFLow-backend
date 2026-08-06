@@ -1,5 +1,6 @@
 const prisma = require("../lib/prisma");
 const { HttpError } = require("../utils/http-error");
+const { buildPagination } = require("../utils/pagination");
 
 function validationError(errors) {
   throw new HttpError(422, "Validation failed", errors);
@@ -137,18 +138,27 @@ const detailSelect = {
   },
 };
 
-async function list() {
-  return prisma.receiving.findMany({
-    select: {
-      id: true,
-      farmId: true,
-      receivedDate: true,
-      status: true,
-      farm: { select: { id: true, name: true } },
-      _count: { select: { items: true, batches: true } },
-    },
-    orderBy: [{ receivedDate: "desc" }, { id: "desc" }],
-  });
+async function list(pagination) {
+  const select = {
+    id: true,
+    farmId: true,
+    receivedDate: true,
+    status: true,
+    farm: { select: { id: true, name: true } },
+    _count: { select: { items: true, batches: true } },
+  };
+  const orderBy = [{ receivedDate: "desc" }, { id: "desc" }];
+  const [data, totalItems] = await prisma.$transaction([
+    prisma.receiving.findMany({
+      select,
+      orderBy,
+      skip: pagination.skip,
+      take: pagination.take,
+    }),
+    prisma.receiving.count(),
+  ]);
+
+  return { data, pagination: buildPagination(pagination.page, pagination.limit, totalItems) };
 }
 
 async function getById(idValue) {

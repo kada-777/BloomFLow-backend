@@ -49,11 +49,61 @@ standards:
       - 5xx
       body:
         success: false
+        code: <stable_error_code>
         message: <global_error_message>
         errors:
         - field: <field_name>
           message: <detail_error>
     business_validation_status: 422
+  pagination:
+    applies_to:
+    - /users
+    - /farms
+    - /branches
+    - /flowers
+    - /receivings
+    - /inventory/head-office
+    - /inventory/branches
+    - /inventory/my-branch
+    - /daily-sales
+    - /distribution-plans
+    - /distributions
+    - /inventory-movements
+    query_parameters:
+      page:
+        type: integer
+        default: 1
+        minimum: 1
+      limit:
+        type: integer
+        default: 10
+        minimum: 1
+        maximum: 100
+    response:
+      success: true
+      data: <array>
+      pagination:
+        page: <integer>
+        limit: <integer>
+        totalItems: <integer>
+        totalPages: <integer>
+        hasNextPage: <boolean>
+        hasPreviousPage: <boolean>
+  error_codes:
+    UNAUTHORIZED:
+      http_status: 401
+      description: Token tidak ada, tidak valid, atau tidak dapat digunakan.
+    FORBIDDEN:
+      http_status: 403
+      description: User terautentikasi tetapi role tidak berhak mengakses endpoint.
+      frontend_action: Arahkan ke halaman /403.
+    ROUTE_NOT_FOUND:
+      http_status: 404
+      description: URL API tidak terdaftar.
+      frontend_action: Arahkan ke halaman /404.
+    RESOURCE_NOT_FOUND:
+      http_status: 404
+      description: Resource yang diminta tidak ditemukan atau berada di luar scope user.
 global_rules:
   database:
   - Operasi yang mengubah stok dan membuat audit movement harus menggunakan transaksi database atomik.
@@ -636,5 +686,5 @@ implementation_guidance:
   - Pertimbangkan row-level locking ketika mengalokasikan batch FIFO agar tidak terjadi overselling.
   idempotency:
   - Cegah endpoint ship, receive, finalize, dan create-orders dijalankan dua kali untuk status yang sama.
-  unspecified_contract_note: Nama field detail, struktur entity lengkap, pagination, filter, sorting, dan contoh
-    payload yang tidak tercantum pada dokumen sumber harus ditentukan pada implementasi lanjutan.
+  unspecified_contract_note: Nama field detail, struktur entity lengkap, filter, sorting, dan contoh payload yang
+    tidak tercantum pada dokumen sumber harus ditentukan pada implementasi lanjutan.
