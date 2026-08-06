@@ -1,8 +1,9 @@
 const userService = require("../services/user.service");
+const { parsePagination } = require("../utils/pagination");
 
 async function listUsers(req, res) {
-  const data = await userService.list();
-  res.json({ success: true, data });
+  const result = await userService.list(parsePagination(req.query));
+  res.json({ success: true, ...result });
 }
 
 async function createUser(req, res) {

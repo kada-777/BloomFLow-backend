@@ -14,6 +14,7 @@ jest.mock("../src/utils/flower-status", () => ({
 const prisma = require("../src/lib/prisma");
 const { getHOStock, getBranchStock, getMyBranchStock } = require("../src/services/inventory.service");
 const { calculateFlowerStatus, getAgePeriods } = require("../src/utils/flower-status");
+const pagination = { page: 1, limit: 10 };
 
 describe("getHOStock", () => {
   afterEach(() => jest.clearAllMocks());
@@ -28,12 +29,13 @@ describe("getHOStock", () => {
       { id: 2, name: "Lily", variety: "White Lily" },
     ]);
 
-    const result = await getHOStock();
+    const result = await getHOStock(pagination);
 
-    expect(result).toEqual([
+    expect(result.data).toEqual([
       { flowerId: 1, flowerName: "Rose", variety: "Red Rose", totalAvailable: "150.00" },
       { flowerId: 2, flowerName: "Lily", variety: "White Lily", totalAvailable: "80.00" },
     ]);
+    expect(result.pagination).toMatchObject({ page: 1, limit: 10, totalItems: 2 });
     expect(prisma.flowerBatch.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({
         by: ["flowerId"],
@@ -46,8 +48,9 @@ describe("getHOStock", () => {
     prisma.flowerBatch.groupBy.mockResolvedValue([]);
     prisma.flower.findMany.mockResolvedValue([]);
 
-    const result = await getHOStock();
-    expect(result).toEqual([]);
+    const result = await getHOStock(pagination);
+    expect(result.data).toEqual([]);
+    expect(result.pagination).toMatchObject({ totalItems: 0, totalPages: 0 });
     expect(prisma.flower.findMany).not.toHaveBeenCalled();
   });
 
@@ -59,13 +62,13 @@ describe("getHOStock", () => {
       { id: 5, name: "Tulip", variety: "Red Tulip" },
     ]);
 
-    const result = await getHOStock();
+    const result = await getHOStock(pagination);
 
     expect(prisma.flower.findMany).toHaveBeenCalledWith({
       where: { id: { in: [5] } },
       select: { id: true, name: true, variety: true },
     });
-    expect(result).toEqual([
+    expect(result.data).toEqual([
       { flowerId: 5, flowerName: "Tulip", variety: "Red Tulip", totalAvailable: "25.00" },
     ]);
   });
@@ -76,8 +79,8 @@ describe("getBranchStock", () => {
 
   test("returns empty array when no lots", async () => {
     prisma.branchStockLot.findMany.mockResolvedValue([]);
-    const result = await getBranchStock();
-    expect(result).toEqual([]);
+    const result = await getBranchStock(pagination);
+    expect(result.data).toEqual([]);
   });
 
   test("returns branch stock with age status", async () => {
@@ -96,10 +99,10 @@ describe("getBranchStock", () => {
     getAgePeriods.mockResolvedValue({ freshPeriod: 7, gradeCPeriod: 4 });
     calculateFlowerStatus.mockReturnValue("FRESH");
 
-    const result = await getBranchStock();
+    const result = await getBranchStock(pagination);
 
-    expect(result).toHaveLength(3);
-    expect(result[0]).toEqual(expect.objectContaining({
+    expect(result.data).toHaveLength(3);
+    expect(result.data[0]).toEqual(expect.objectContaining({
       branchId: 1,
       branchName: "Branch A",
       flowerId: 1,
@@ -114,8 +117,8 @@ describe("getMyBranchStock", () => {
 
   test("returns empty array when branch has no stock", async () => {
     prisma.branchStockLot.findMany.mockResolvedValue([]);
-    const result = await getMyBranchStock(1);
-    expect(result).toEqual([]);
+    const result = await getMyBranchStock(1, pagination);
+    expect(result.data).toEqual([]);
   });
 
   test("returns grouped branch stock with age status", async () => {
@@ -131,13 +134,13 @@ describe("getMyBranchStock", () => {
     getAgePeriods.mockResolvedValue({ freshPeriod: 7, gradeCPeriod: 4 });
     calculateFlowerStatus.mockReturnValue("FRESH");
 
-    const result = await getMyBranchStock(1);
+    const result = await getMyBranchStock(1, pagination);
 
-    expect(result).toHaveLength(2);
-    expect(result[0].flowerId).toBe(1);
-    expect(result[0].totalQuantity).toBe("80.00");
-    expect(result[0].lots).toHaveLength(2);
-    expect(result[1].flowerId).toBe(2);
-    expect(result[1].totalQuantity).toBe("20.00");
+    expect(result.data).toHaveLength(2);
+    expect(result.data[0].flowerId).toBe(1);
+    expect(result.data[0].totalQuantity).toBe("80.00");
+    expect(result.data[0].lots).toHaveLength(2);
+    expect(result.data[1].flowerId).toBe(2);
+    expect(result.data[1].totalQuantity).toBe("20.00");
   });
 });

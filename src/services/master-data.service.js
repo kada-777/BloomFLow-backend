@@ -1,5 +1,6 @@
 const prisma = require("../lib/prisma");
 const { HttpError } = require("../utils/http-error");
+const { buildPagination } = require("../utils/pagination");
 
 const resources = {
   farm: {
@@ -99,11 +100,18 @@ function parseId(value) {
   return id;
 }
 
-async function list(resourceName) {
+async function list(resourceName, pagination) {
   const resource = getResource(resourceName);
-  return prisma[resource.model].findMany({
-    orderBy: { name: "asc" },
-  });
+  const [data, totalItems] = await prisma.$transaction([
+    prisma[resource.model].findMany({
+      orderBy: { name: "asc" },
+      skip: pagination.skip,
+      take: pagination.take,
+    }),
+    prisma[resource.model].count(),
+  ]);
+
+  return { data, pagination: buildPagination(pagination.page, pagination.limit, totalItems) };
 }
 
 async function create(resourceName, payload) {

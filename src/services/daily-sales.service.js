@@ -1,6 +1,7 @@
 const prisma = require("../lib/prisma");
 const { HttpError } = require("../utils/http-error");
 const { allocateBranchLots, calculateUsableStock, toMinorUnits, minorUnitsToString } = require("../utils/branch-stock");
+const { buildPagination } = require("../utils/pagination");
 
 function validationError(errors) {
   throw new HttpError(422, "Validation failed", errors);
@@ -252,21 +253,24 @@ async function getById(idValue, branchId) {
   return dailySale;
 }
 
-async function list(branchId) {
+async function list(branchId, pagination) {
   const where = {};
   if (branchId) where.branchId = branchId;
 
-  return prisma.dailySale.findMany({
-    where,
-    select: {
-      id: true,
-      branchId: true,
-      salesDate: true,
-      branch: { select: { id: true, name: true } },
-      _count: { select: { items: true } },
-    },
-    orderBy: [{ salesDate: "desc" }, { id: "desc" }],
-  });
+  const select = {
+    id: true,
+    branchId: true,
+    salesDate: true,
+    branch: { select: { id: true, name: true } },
+    _count: { select: { items: true } },
+  };
+  const orderBy = [{ salesDate: "desc" }, { id: "desc" }];
+  const [data, totalItems] = await prisma.$transaction([
+    prisma.dailySale.findMany({ where, select, orderBy, skip: pagination.skip, take: pagination.take }),
+    prisma.dailySale.count({ where }),
+  ]);
+
+  return { data, pagination: buildPagination(pagination.page, pagination.limit, totalItems) };
 }
 
 module.exports = { create, getById, list, validatePayload };

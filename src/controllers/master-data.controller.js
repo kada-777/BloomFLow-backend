@@ -1,9 +1,10 @@
 const masterDataService = require("../services/master-data.service");
+const { parsePagination } = require("../utils/pagination");
 
 function listResource(resourceName) {
   return async (req, res) => {
-    const data = await masterDataService.list(resourceName);
-    res.json({ success: true, data });
+    const result = await masterDataService.list(resourceName, parsePagination(req.query));
+    res.json({ success: true, ...result });
   };
 }
 

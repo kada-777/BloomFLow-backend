@@ -1,7 +1,9 @@
 const prisma = require("../lib/prisma");
 const { calculateFlowerStatus, getAgePeriods } = require("../utils/flower-status");
+const { minorUnitsToString, toMinorUnits } = require("../utils/branch-stock");
+const { paginateArray } = require("../utils/pagination");
 
-async function getHOStock() {
+async function getHOStock(pagination) {
   const grouped = await prisma.flowerBatch.groupBy({
     by: ["flowerId"],
     where: {
@@ -11,7 +13,7 @@ async function getHOStock() {
     _sum: { availableQuantity: true },
   });
 
-  if (grouped.length === 0) return [];
+  if (grouped.length === 0) return paginateArray([], pagination);
 
   const flowerIds = grouped.map((g) => g.flowerId);
   const flowers = await prisma.flower.findMany({
@@ -21,7 +23,7 @@ async function getHOStock() {
 
   const flowerMap = new Map(flowers.map((f) => [f.id, f]));
 
-  return grouped.map((g) => {
+  const data = grouped.map((g) => {
     const flower = flowerMap.get(g.flowerId);
     return {
       flowerId: g.flowerId,
@@ -30,9 +32,11 @@ async function getHOStock() {
       totalAvailable: g._sum.availableQuantity ?? "0",
     };
   });
+
+  return paginateArray(data, pagination);
 }
 
-async function getBranchStock() {
+async function getBranchStock(pagination) {
   const lots = await prisma.branchStockLot.findMany({
     where: { quantity: { not: "0" } },
     select: {
@@ -44,7 +48,7 @@ async function getBranchStock() {
     orderBy: [{ branchId: "asc" }, { flowerId: "asc" }, { shippedAt: "asc" }],
   });
 
-  if (lots.length === 0) return [];
+  if (lots.length === 0) return paginateArray([], pagination);
 
   const { freshPeriod, gradeCPeriod } = await getAgePeriods();
 
@@ -84,10 +88,10 @@ async function getBranchStock() {
     });
   }
 
-  return result;
+  return paginateArray(result, pagination);
 }
 
-async function getMyBranchStock(branchId) {
+async function getMyBranchStock(branchId, pagination) {
   const lots = await prisma.branchStockLot.findMany({
     where: {
       branchId,
@@ -101,7 +105,7 @@ async function getMyBranchStock(branchId) {
     orderBy: [{ flowerId: "asc" }, { shippedAt: "asc" }],
   });
 
-  if (lots.length === 0) return [];
+  if (lots.length === 0) return paginateArray([], pagination);
 
   const { freshPeriod, gradeCPeriod } = await getAgePeriods();
 
@@ -125,15 +129,13 @@ async function getMyBranchStock(branchId) {
         flowerId: lot.flowerId,
         flowerName: flower?.name ?? null,
         variety: flower?.variety ?? null,
-        totalQuantity: "0",
+      totalQuantity: 0n,
         lots: [],
       });
     }
 
     const entry = grouped.get(key);
-    entry.totalQuantity = (
-      parseFloat(entry.totalQuantity) + parseFloat(lot.quantity)
-    ).toFixed(2);
+    entry.totalQuantity += toMinorUnits(lot.quantity);
 
     entry.lots.push({
       quantity: lot.quantity,
@@ -142,7 +144,12 @@ async function getMyBranchStock(branchId) {
     });
   }
 
-  return Array.from(grouped.values());
+  const data = Array.from(grouped.values()).map((entry) => ({
+    ...entry,
+    totalQuantity: minorUnitsToString(entry.totalQuantity),
+  }));
+
+  return paginateArray(data, pagination);
 }
 
 module.exports = { getHOStock, getBranchStock, getMyBranchStock };

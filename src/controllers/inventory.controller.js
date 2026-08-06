@@ -1,9 +1,10 @@
 const { getHOStock, getBranchStock, getMyBranchStock } = require("../services/inventory.service");
+const { parsePagination } = require("../utils/pagination");
 
 async function getHOStockHandler(req, res, next) {
   try {
-    const data = await getHOStock();
-    res.json({ success: true, data });
+    const result = await getHOStock(parsePagination(req.query));
+    res.json({ success: true, ...result });
   } catch (err) {
     next(err);
   }
@@ -11,8 +12,8 @@ async function getHOStockHandler(req, res, next) {
 
 async function getBranchStockHandler(req, res, next) {
   try {
-    const data = await getBranchStock();
-    res.json({ success: true, data });
+    const result = await getBranchStock(parsePagination(req.query));
+    res.json({ success: true, ...result });
   } catch (err) {
     next(err);
   }
@@ -21,8 +22,8 @@ async function getBranchStockHandler(req, res, next) {
 async function getMyBranchStockHandler(req, res, next) {
   try {
     const branchId = req.user.branchId;
-    const data = await getMyBranchStock(branchId);
-    res.json({ success: true, data });
+    const result = await getMyBranchStock(branchId, parsePagination(req.query));
+    res.json({ success: true, ...result });
   } catch (err) {
     next(err);
   }
