@@ -144,6 +144,7 @@ enums:
   - DRAFT
   - IN_TRANSIT
   - RECEIVED
+  - CANCELLED
   flower_status:
   - FRESH
   - GRADE_C
@@ -181,6 +182,9 @@ status_lifecycle:
   - from: IN_TRANSIT
     to: RECEIVED
     event: order_received
+  - from: DRAFT
+    to: CANCELLED
+    event: order_cancelled
 flower_age_logic:
   head_office_inventory:
     age_source: receivedDate
@@ -291,6 +295,11 @@ business_modules:
     trigger: POST /distributions/:id/ship
     required_current_status: DRAFT
     result_status: IN_TRANSIT
+    order_granularity:
+      description: Satu distribution_order merepresentasikan satu pengiriman ke satu branch dan dapat berisi
+        banyak flower sekaligus. Tidak ada tabel distribution_order_items terpisah; breakdown per flower
+        didapat dari distribution_batch_allocations, karena setiap batch yang dialokasikan sudah memiliki flowerId.
+      created_from: distribution_plan_items yang di-group per branchId saat POST /distribution-plans/:id/create-orders
     batch_allocation:
       location: HEAD_OFFICE
       method: FIFO
@@ -343,6 +352,28 @@ business_modules:
     - receivingId
     - distributionId
     - salesId
+ml_service:
+  description: Layanan internal terpisah (FastAPI) untuk demand forecasting. 
+    Tidak diakses langsung oleh frontend; hanya dipanggil oleh backend saat 
+    POST /distribution-plans/generate.
+  internal: true
+  base_url_env: ML_SERVICE_URL
+  authentication: none_internal_network
+  error_handling:
+    on_failure: Backend menangkap error dari ML service dan fallback ke 
+      forecastMethod=BASELINE tanpa merusak transaksi distribution plan.
+  endpoints:
+  - method: GET
+    path: /health
+  - method: POST
+    path: /forecast
+    called_by: backend (POST /distribution-plans/generate)
+    request:
+      body: {branchIds[], flowerIds[], planningDate, planningHorizon}
+    response:
+      runId, trainingDataUntil,
+      results: [{branchId, flowerId, forecastDemand, forecastPeriod, 
+                 forecastMethod, modelVersion, confidenceInterval}]
 endpoints:
 - id: 1
   method: POST

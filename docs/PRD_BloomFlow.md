@@ -606,7 +606,6 @@ Database menggunakan PostgreSQL dengan relasi dan transaction untuk menjaga kons
 - `distribution_plans`
 - `distribution_plan_items`
 - `distribution_orders`
-- `distribution_order_items`
 - `distribution_batch_allocations`
 - `distribution_receipts`
 - `distribution_receipt_items`
