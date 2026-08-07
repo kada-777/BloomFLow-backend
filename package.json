@@ -6,8 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "db:seed": "prisma db seed",
-    "test": "jest --runInBand"
+    "db:seed": "prisma db seed"
   },
   "keywords": [],
   "author": "",
@@ -24,7 +23,6 @@
     "pg": "^8.22.0"
   },
   "devDependencies": {
-    "jest": "^30.4.2",
     "nodemon": "^3.1.14",
     "prisma": "^7.9.1"
   }
