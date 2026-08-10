@@ -104,6 +104,9 @@ standards:
     RESOURCE_NOT_FOUND:
       http_status: 404
       description: Resource yang diminta tidak ditemukan atau berada di luar scope user.
+    RESOURCE_IN_USE:
+      http_status: 409
+      description: Resource tidak dapat dihapus karena sudah dipakai oleh data operasional.
 global_rules:
   database:
   - Operasi yang mengubah stok dan membuat audit movement harus menggunakan transaksi database atomik.
@@ -453,6 +456,13 @@ endpoints:
   summary: Update kebun
   access:
   - SUPERADMIN
+- id: 39
+  method: DELETE
+  path: /farms/:id
+  summary: Hard delete kebun
+  access:
+  - SUPERADMIN
+  error_status: 409 jika kebun sudah dipakai receiving.
 - id: 10
   method: GET
   path: /branches
@@ -472,6 +482,13 @@ endpoints:
   summary: Update cabang
   access:
   - SUPERADMIN
+- id: 40
+  method: DELETE
+  path: /branches/:id
+  summary: Hard delete cabang
+  access:
+  - SUPERADMIN
+  error_status: 409 jika cabang sudah dipakai data operasional.
 - id: 13
   method: GET
   path: /flowers
@@ -492,6 +509,13 @@ endpoints:
   summary: Update bunga
   access:
   - SUPERADMIN
+- id: 41
+  method: DELETE
+  path: /flowers/:id
+  summary: Hard delete bunga
+  access:
+  - SUPERADMIN
+  error_status: 409 jika bunga sudah dipakai data operasional.
 - id: 16
   method: GET
   path: /configurations
