@@ -1,4 +1,9 @@
-const { getHOStock, getBranchStock, getMyBranchStock } = require("../services/inventory.service");
+const {
+  getHOStock,
+  getBranchStock,
+  getMyBranchStock,
+  getMyBranchFlowerDetail,
+} = require("../services/inventory.service");
 const { parsePagination } = require("../utils/pagination");
 
 async function getHOStockHandler(req, res, next) {
@@ -29,8 +34,19 @@ async function getMyBranchStockHandler(req, res, next) {
   }
 }
 
+async function getMyBranchFlowerDetailHandler(req, res, next) {
+  try {
+    const branchId = req.user.branchId;
+    const data = await getMyBranchFlowerDetail(branchId, req.params.flowerId);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   getHOStock: getHOStockHandler,
   getBranchStock: getBranchStockHandler,
   getMyBranchStock: getMyBranchStockHandler,
+  getMyBranchFlowerDetail: getMyBranchFlowerDetailHandler,
 };

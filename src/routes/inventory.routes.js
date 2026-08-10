@@ -4,6 +4,7 @@ const {
   getHOStock,
   getBranchStock,
   getMyBranchStock,
+  getMyBranchFlowerDetail,
 } = require("../controllers/inventory.controller");
 
 const router = express.Router();
@@ -27,6 +28,13 @@ router.get(
   authenticate,
   authorizeRoles("STAFF_BRANCH"),
   getMyBranchStock
+);
+
+router.get(
+  "/inventory/my-branch/:flowerId",
+  authenticate,
+  authorizeRoles("STAFF_BRANCH"),
+  getMyBranchFlowerDetail
 );
 
 module.exports = router;

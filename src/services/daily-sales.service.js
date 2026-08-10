@@ -262,6 +262,16 @@ async function list(branchId, pagination) {
     branchId: true,
     salesDate: true,
     branch: { select: { id: true, name: true } },
+    items: {
+      select: {
+        id: true,
+        flowerId: true,
+        soldQuantity: true,
+        damagedQuantity: true,
+        flower: { select: { id: true, name: true, variety: true } },
+      },
+      orderBy: { id: "asc" },
+    },
     _count: { select: { items: true } },
   };
   const orderBy = [{ salesDate: "desc" }, { id: "desc" }];

@@ -152,4 +152,65 @@ async function getMyBranchStock(branchId, pagination) {
   return paginateArray(data, pagination);
 }
 
-module.exports = { getHOStock, getBranchStock, getMyBranchStock };
+async function getMyBranchFlowerDetail(branchId, flowerIdValue) {
+  const flowerId = Number(flowerIdValue);
+  if (!Number.isInteger(flowerId) || flowerId < 1) {
+    const { HttpError } = require("../utils/http-error");
+    throw new HttpError(422, "Validation failed", [
+      { field: "flowerId", message: "flowerId must be a positive integer" },
+    ]);
+  }
+
+  const [flower, lots] = await Promise.all([
+    prisma.flower.findUnique({
+      where: { id: flowerId },
+      select: { id: true, name: true, variety: true },
+    }),
+    prisma.branchStockLot.findMany({
+      where: { branchId, flowerId, quantity: { not: "0" } },
+      select: { id: true, quantity: true, shippedAt: true, sourceOrderId: true },
+      orderBy: [{ shippedAt: "asc" }, { id: "asc" }],
+    }),
+  ]);
+
+  if (!flower || lots.length === 0) {
+    const { HttpError } = require("../utils/http-error");
+    throw new HttpError(404, "Branch inventory flower not found");
+  }
+
+  const sourceOrderIds = [...new Set(lots.map((lot) => lot.sourceOrderId))];
+  const allocations = await prisma.distributionBatchAllocation.findMany({
+    where: {
+      distributionOrderId: { in: sourceOrderIds },
+      batch: { flowerId },
+    },
+    select: {
+      distributionOrderId: true,
+      id: true,
+      batch: { select: { batchNumber: true, receivedDate: true } },
+    },
+    orderBy: [{ distributionOrderId: "asc" }, { id: "asc" }],
+  });
+
+  const sourcesByOrder = new Map();
+  for (const allocation of allocations) {
+    const sources = sourcesByOrder.get(allocation.distributionOrderId) || [];
+    sources.push(allocation.batch);
+    sourcesByOrder.set(allocation.distributionOrderId, sources);
+  }
+
+  const { freshPeriod, gradeCPeriod } = await getAgePeriods();
+  const now = Date.now();
+  const detailLots = lots.map((lot) => ({
+    id: lot.id,
+    quantity: lot.quantity,
+    shippedAt: lot.shippedAt,
+    ageDays: Math.max(0, Math.floor((now - new Date(lot.shippedAt).getTime()) / (1000 * 60 * 60 * 24))),
+    flowerStatus: calculateFlowerStatus(lot.shippedAt, freshPeriod, gradeCPeriod),
+    sourceBatches: sourcesByOrder.get(lot.sourceOrderId) || [],
+  }));
+
+  return { flower, lots: detailLots };
+}
+
+module.exports = { getHOStock, getBranchStock, getMyBranchStock, getMyBranchFlowerDetail };
