@@ -10,13 +10,16 @@ const flowerReaders = [authenticate, authorizeRoles("SUPERADMIN", "STAFF_HEAD_OF
 router.get("/farms", ...farmAndBranchReaders, controller.listFarms);
 router.post("/farms", ...superadmin, controller.createFarm);
 router.patch("/farms/:id", ...superadmin, controller.updateFarm);
+router.delete("/farms/:id", ...superadmin, controller.deleteFarm);
 
 router.get("/branches", ...farmAndBranchReaders, controller.listBranches);
 router.post("/branches", ...superadmin, controller.createBranch);
 router.patch("/branches/:id", ...superadmin, controller.updateBranch);
+router.delete("/branches/:id", ...superadmin, controller.deleteBranch);
 
 router.get("/flowers", ...flowerReaders, controller.listFlowers);
 router.post("/flowers", ...superadmin, controller.createFlower);
 router.patch("/flowers/:id", ...superadmin, controller.updateFlower);
+router.delete("/flowers/:id", ...superadmin, controller.deleteFlower);
 
 module.exports = router;

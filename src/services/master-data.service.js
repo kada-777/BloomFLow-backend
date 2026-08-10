@@ -146,10 +146,34 @@ async function update(resourceName, idValue, payload) {
   });
 }
 
+async function remove(resourceName, idValue) {
+  const resource = getResource(resourceName);
+  const id = parseId(idValue);
+  const existing = await prisma[resource.model].findUnique({ where: { id } });
+
+  if (!existing) throw new HttpError(404, `${resource.label} not found`);
+
+  try {
+    return await prisma[resource.model].delete({ where: { id } });
+  } catch (error) {
+    if (error.code === "P2003") {
+      const resourceInUseError = new HttpError(
+        409,
+        `${resource.label} cannot be deleted because it is in use`
+      );
+      resourceInUseError.code = "RESOURCE_IN_USE";
+      throw resourceInUseError;
+    }
+
+    throw error;
+  }
+}
+
 module.exports = {
   create,
   list,
   update,
+  remove,
   validateCreatePayload,
   validateUpdatePayload,
 };

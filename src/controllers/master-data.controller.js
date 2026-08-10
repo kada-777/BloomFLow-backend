@@ -22,14 +22,24 @@ function updateResource(resourceName) {
   };
 }
 
+function deleteResource(resourceName) {
+  return async (req, res) => {
+    const data = await masterDataService.remove(resourceName, req.params.id);
+    res.json({ success: true, data });
+  };
+}
+
 module.exports = {
   listFarms: listResource("farm"),
   createFarm: createResource("farm"),
   updateFarm: updateResource("farm"),
+  deleteFarm: deleteResource("farm"),
   listBranches: listResource("branch"),
   createBranch: createResource("branch"),
   updateBranch: updateResource("branch"),
+  deleteBranch: deleteResource("branch"),
   listFlowers: listResource("flower"),
   createFlower: createResource("flower"),
   updateFlower: updateResource("flower"),
+  deleteFlower: deleteResource("flower"),
 };
