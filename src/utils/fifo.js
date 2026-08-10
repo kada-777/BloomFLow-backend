@@ -51,6 +51,8 @@ async function allocateHOBatches(tx, { flowerId, quantity }) {
       batchId: batch.id,
       batchNumber: batch.batchNumber,
       allocatedQuantity: minorUnitsToString(allocate),
+      qtyBefore: minorUnitsToString(available),
+      qtyAfter: minorUnitsToString(newAvailable),
     });
 
     remaining -= allocate;
