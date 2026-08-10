@@ -5,19 +5,19 @@ const { buildPagination } = require("../utils/pagination");
 const resources = {
   farm: {
     model: "farm",
-    label: "Farm",
+    label: "farm",
     requiredFields: ["name", "location"],
     editableFields: ["name", "location"],
   },
   branch: {
     model: "branch",
-    label: "Branch",
+    label: "branch",
     requiredFields: ["name", "location"],
     editableFields: ["name", "location"],
   },
   flower: {
     model: "flower",
-    label: "Flower",
+    label: "flower",
     requiredFields: ["name", "variety"],
     editableFields: ["name", "variety"],
   },
@@ -47,7 +47,9 @@ function validateCreatePayload(resourceName, payload) {
   const errors = [];
 
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    validationError([{ field: "body", message: "Request body must be an object" }]);
+    validationError([
+      { field: "body", message: "Request body must be an object" },
+    ]);
   }
 
   for (const field of resource.requiredFields) {
@@ -70,7 +72,9 @@ function validateUpdatePayload(resourceName, payload) {
   const data = {};
 
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    validationError([{ field: "body", message: "Request body must be an object" }]);
+    validationError([
+      { field: "body", message: "Request body must be an object" },
+    ]);
   }
 
   for (const field of resource.editableFields) {
@@ -85,7 +89,10 @@ function validateUpdatePayload(resourceName, payload) {
   }
 
   if (!Object.keys(data).length && !errors.length) {
-    errors.push({ field: "body", message: "At least one editable field is required" });
+    errors.push({
+      field: "body",
+      message: "At least one editable field is required",
+    });
   }
 
   if (errors.length) validationError(errors);
@@ -95,7 +102,9 @@ function validateUpdatePayload(resourceName, payload) {
 function parseId(value) {
   const id = Number(value);
   if (!Number.isInteger(id) || id < 1) {
-    validationError([{ field: "id", message: "id must be a positive integer" }]);
+    validationError([
+      { field: "id", message: "id must be a positive integer" },
+    ]);
   }
   return id;
 }
@@ -111,12 +120,17 @@ async function list(resourceName, pagination) {
     prisma[resource.model].count(),
   ]);
 
-  return { data, pagination: buildPagination(pagination.page, pagination.limit, totalItems) };
+  return {
+    data,
+    pagination: buildPagination(pagination.page, pagination.limit, totalItems),
+  };
 }
 
 async function create(resourceName, payload) {
   const resource = getResource(resourceName);
-  return prisma[resource.model].create({ data: validateCreatePayload(resourceName, payload) });
+  return prisma[resource.model].create({
+    data: validateCreatePayload(resourceName, payload),
+  });
 }
 
 async function update(resourceName, idValue, payload) {
