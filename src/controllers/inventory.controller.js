@@ -27,7 +27,7 @@ async function getBranchStockHandler(req, res, next) {
 async function getMyBranchStockHandler(req, res, next) {
   try {
     const branchId = req.user.branchId;
-    const result = await getMyBranchStock(branchId, parsePagination(req.query));
+    const result = await getMyBranchStock(branchId, parsePagination(req.query), req.query.sort);
     res.json({ success: true, ...result });
   } catch (err) {
     next(err);

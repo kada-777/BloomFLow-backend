@@ -3,7 +3,7 @@ const { parsePagination } = require("../utils/pagination");
 
 function listResource(resourceName) {
   return async (req, res) => {
-    const result = await masterDataService.list(resourceName, parsePagination(req.query));
+    const result = await masterDataService.list(resourceName, parsePagination(req.query), req.query.sort);
     res.json({ success: true, ...result });
   };
 }
