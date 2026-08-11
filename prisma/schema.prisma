@@ -21,6 +21,7 @@ enum BatchStatus {
 enum ForecastMethod {
   ML
   BASELINE
+  MIXED
 }
 
 enum DistributionPlanStatus {
@@ -196,6 +197,8 @@ model ForecastResult {
   flowerId           Int
   forecastDemand     Decimal     @db.Decimal(10, 2)
   forecastPeriod     String      @db.VarChar(50)
+  forecastMethod     ForecastMethod
+  modelVersion       String      @db.VarChar(50)
   confidenceInterval Decimal?    @db.Decimal(5, 2)
   run                ForecastRun @relation(fields: [runId], references: [id])
   branch             Branch      @relation(fields: [branchId], references: [id])
@@ -212,6 +215,7 @@ model DistributionPlan {
   status       DistributionPlanStatus @default(DRAFT)
   planningDate DateTime               @db.Date
   items        DistributionPlanItem[]
+  orders       DistributionOrder[]
 
   @@index([status, planningDate])
   @@map("distribution_plans")
@@ -236,15 +240,19 @@ model DistributionPlanItem {
 }
 
 model DistributionOrder {
-  id          Int                     @id @default(autoincrement())
-  branchId    Int
-  status      DistributionOrderStatus @default(DRAFT)
-  shippedAt   DateTime?
-  branch      Branch                  @relation(fields: [branchId], references: [id])
-  allocations DistributionBatchAllocation[]
-  receipt     DistributionReceipt?
-  stockLots   BranchStockLot[]
+  id                 Int                     @id @default(autoincrement())
+  distributionPlanId Int?
+  branchId           Int
+  status             DistributionOrderStatus @default(DRAFT)
+  shippedAt          DateTime?
+  distributionPlan   DistributionPlan?       @relation(fields: [distributionPlanId], references: [id])
+  branch             Branch                  @relation(fields: [branchId], references: [id])
+  allocations        DistributionBatchAllocation[]
+  receipt            DistributionReceipt?
+  stockLots          BranchStockLot[]
 
+  @@unique([distributionPlanId, branchId])
+  @@index([distributionPlanId])
   @@index([branchId, status])
   @@map("distribution_orders")
 }

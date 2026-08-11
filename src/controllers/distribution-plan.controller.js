@@ -1,5 +1,6 @@
 const distributionPlanService = require("../services/distribution-plan.service");
 const distributionShipmentService = require("../services/distribution-shipment.service");
+const distributionOrderService = require("../services/distribution-order.service");
 const { parsePagination } = require("../utils/pagination");
 
 async function listPlans(req, res, next) {
@@ -51,4 +52,13 @@ async function shipPlan(req, res, next) {
   }
 }
 
-module.exports = { finalizePlan, getPlan, listPlans, shipPlan, updatePlanItem };
+async function createOrders(req, res, next) {
+  try {
+    const data = await distributionOrderService.createOrders(req.params.id);
+    res.status(201).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+module.exports = { createOrders, finalizePlan, getPlan, listPlans, shipPlan, updatePlanItem };

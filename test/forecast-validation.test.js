@@ -14,7 +14,6 @@ function validResponse() {
       horizon,
       forecastDemand: 10.5,
       forecastMethod: "ML",
-      modelName: "HistGradientBoostingRegressor",
       modelVersion: "hgb-v1",
       generatedAt: "2025-06-30T12:00:00+00:00",
     })),

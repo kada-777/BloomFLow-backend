@@ -11,6 +11,124 @@ function addQuantity(map, key, value) {
   map.set(key, (map.get(key) ?? 0n) + toMinorUnits(value ?? "0"));
 }
 
+function getEligiblePairs(historyByPair, minimumHistory) {
+  return [...historyByPair.entries()]
+    .filter(([, historyDays]) => historyDays >= minimumHistory)
+    .map(([key]) => {
+      const [branchId, flowerId] = key.split(":").map(Number);
+      return { branchId, flowerId };
+    })
+    .sort((left, right) => left.branchId - right.branchId || left.flowerId - right.flowerId);
+}
+
+function dateText(value) {
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value).slice(0, 10);
+}
+
+function buildBaselineResults({ branches, flowers, sales, pairs, cutoffDate, window = 7 }) {
+  const cutoff = new Date(`${dateText(cutoffDate)}T00:00:00.000Z`);
+  const firstDate = new Date(cutoff);
+  firstDate.setUTCDate(firstDate.getUTCDate() - window + 1);
+  const totalsByFlower = new Map();
+
+  for (const sale of sales) {
+    const salesDate = new Date(`${dateText(sale.salesDate)}T00:00:00.000Z`);
+    if (salesDate < firstDate || salesDate > cutoff) continue;
+    for (const item of sale.items ?? []) {
+      const demand = toMinorUnits(item.soldQuantity ?? "0") + toMinorUnits(item.damagedQuantity ?? "0");
+      totalsByFlower.set(item.flowerId, (totalsByFlower.get(item.flowerId) ?? 0n) + demand);
+    }
+  }
+
+  const branchById = new Map(branches.map((branch) => [branch.id, branch]));
+  const flowerById = new Map(flowers.map((flower) => [flower.id, flower]));
+  const generatedAt = new Date().toISOString();
+  const results = [];
+
+  for (const pair of pairs) {
+    const branch = branchById.get(pair.branchId);
+    const flower = flowerById.get(pair.flowerId);
+    const demand = Number(totalsByFlower.get(pair.flowerId) ?? 0n) / 100 / window;
+    const forecastDemand = demand.toFixed(2);
+    for (let horizon = 1; horizon <= 3; horizon += 1) {
+      const forecastDate = new Date(cutoff);
+      forecastDate.setUTCDate(forecastDate.getUTCDate() + horizon);
+      results.push({
+        branchId: pair.branchId,
+        branchName: branch.name,
+        flowerId: pair.flowerId,
+        flowerName: flower.name,
+        forecastDate: forecastDate.toISOString().slice(0, 10),
+        horizon,
+        forecastDemand,
+        forecastMethod: "BASELINE",
+        modelVersion: "baseline-v1",
+        generatedAt,
+      });
+    }
+  }
+
+  return results;
+}
+
+async function loadForecastHistory(tx, cutoffDate) {
+  const cutoff = new Date(`${dateText(cutoffDate)}T00:00:00.000Z`);
+  const [branches, flowers, sales, minimumHistoryConfig] = await Promise.all([
+    tx.branch.findMany({ select: { id: true, name: true } }),
+    tx.flower.findMany({ select: { id: true, name: true, variety: true } }),
+    tx.dailySale.findMany({
+      where: { salesDate: { lte: cutoff } },
+      select: {
+        branchId: true,
+        salesDate: true,
+        items: { select: { flowerId: true, soldQuantity: true, damagedQuantity: true } },
+      },
+    }),
+    tx.systemConfiguration.findUnique({
+      where: { key: "AI_MINIMUM_HISTORY" },
+      select: { value: true },
+    }),
+  ]);
+
+  const historyDates = new Map();
+  for (const sale of sales) {
+    const saleDate = dateText(sale.salesDate);
+    for (const item of sale.items) {
+      const key = `${sale.branchId}:${item.flowerId}`;
+      const dates = historyDates.get(key) ?? new Set();
+      dates.add(saleDate);
+      historyDates.set(key, dates);
+    }
+  }
+
+  const historyByPair = new Map(
+    [...historyDates.entries()].map(([key, dates]) => [key, dates.size])
+  );
+  const allPairs = branches.flatMap((branch) => flowers.map((flower) => ({
+    branchId: branch.id,
+    flowerId: flower.id,
+  })));
+  const minimumHistory = Number.parseInt(minimumHistoryConfig?.value ?? "28", 10);
+  if (!Number.isInteger(minimumHistory) || minimumHistory < 1) {
+    throw new Error("AI_MINIMUM_HISTORY must be a positive integer");
+  }
+
+  const eligiblePairs = getEligiblePairs(historyByPair, minimumHistory);
+  const eligibleKeys = new Set(eligiblePairs.map((pair) => `${pair.branchId}:${pair.flowerId}`));
+  const baselinePairs = allPairs.filter((pair) => !eligibleKeys.has(`${pair.branchId}:${pair.flowerId}`));
+
+  return { allPairs, baselinePairs, branches, flowers, eligiblePairs, historyByPair, sales, cutoffDate };
+}
+
+function validateEligibleResults(results, eligiblePairs) {
+  const eligibleKeys = new Set(eligiblePairs.map((pair) => `${pair.branchId}:${pair.flowerId}`));
+  const resultKeys = new Set(results.map((result) => `${result.branchId}:${result.flowerId}`));
+  if (resultKeys.size !== eligibleKeys.size || [...resultKeys].some((key) => !eligibleKeys.has(key))) {
+    throw new Error("Forecast service returned results outside eligiblePairs");
+  }
+}
+
 function buildRecommendations(results, branchLots, inTransit, headOfficeStock, safetyStock) {
   const stockByPair = new Map();
   const inTransitByPair = new Map();
@@ -122,14 +240,43 @@ function getDefaultDependencies() {
 }
 
 async function generateForecast(options = {}, dependencies = getDefaultDependencies()) {
-  const request = {};
-  if (options.forecastDate) request.forecastDate = options.forecastDate;
-  if (options.modelVersion) request.modelVersion = options.modelVersion;
-
-  const response = dependencies.responseValidator(await dependencies.forecastClient(request));
-  const dPlusOneResults = response.results.filter((result) => result.horizon === 1);
-
   const persisted = await dependencies.prismaClient.$transaction(async (tx) => {
+    const preliminarySales = await tx.dailySale.findMany({
+      select: { salesDate: true },
+    });
+    if (!preliminarySales.length && !options.forecastDate) {
+      throw new Error("Daily sales history is required to generate a forecast");
+    }
+    const cutoffDate = options.forecastDate
+      ?? preliminarySales.map((sale) => dateText(sale.salesDate)).sort().at(-1);
+    const forecastHistory = await loadForecastHistory(tx, cutoffDate);
+    const request = { forecastDate: cutoffDate, eligiblePairs: forecastHistory.eligiblePairs };
+    if (options.modelVersion) request.modelVersion = options.modelVersion;
+
+    let mlResults = [];
+    let mlModelVersion = options.modelVersion ?? "hgb-v1";
+    if (forecastHistory.eligiblePairs.length) {
+      const mlResponse = dependencies.responseValidator(await dependencies.forecastClient(request));
+      validateEligibleResults(mlResponse.results, forecastHistory.eligiblePairs);
+      mlResults = mlResponse.results;
+      mlModelVersion = mlResponse.modelVersion;
+    }
+    const baselineResults = buildBaselineResults({
+      branches: forecastHistory.branches,
+      flowers: forecastHistory.flowers,
+      sales: forecastHistory.sales,
+      pairs: forecastHistory.baselinePairs,
+      cutoffDate,
+    });
+    const results = [...mlResults, ...baselineResults];
+    const forecastMethod = mlResults.length && baselineResults.length
+      ? "MIXED"
+      : (mlResults.length ? "ML" : "BASELINE");
+    const modelVersion = forecastMethod === "MIXED"
+      ? "mixed"
+      : (mlResults.length ? mlModelVersion : "baseline-v1");
+    const dPlusOneResults = results.filter((result) => result.horizon === 1);
+
     const snapshot = await loadInventorySnapshot(tx);
     const recommendations = buildRecommendations(
       dPlusOneResults,
@@ -140,21 +287,23 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
     );
     const forecastRun = await tx.forecastRun.create({
       data: {
-        executedAt: new Date(response.results[0].generatedAt),
-        modelVersion: response.modelVersion,
-        forecastMethod: response.forecastMethod,
-        trainingDataUntil: new Date(`${response.cutoffDate}T00:00:00.000Z`),
+        executedAt: new Date(results[0].generatedAt),
+        modelVersion,
+        forecastMethod,
+        trainingDataUntil: new Date(`${cutoffDate}T00:00:00.000Z`),
       },
       select: { id: true },
     });
 
     await tx.forecastResult.createMany({
-      data: response.results.map((result) => ({
+      data: results.map((result) => ({
         runId: forecastRun.id,
         branchId: result.branchId,
         flowerId: result.flowerId,
         forecastDemand: result.forecastDemand,
         forecastPeriod: result.forecastDate,
+        forecastMethod: result.forecastMethod,
+        modelVersion: result.modelVersion,
       })),
     });
 
@@ -179,4 +328,11 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
   return persisted;
 }
 
-module.exports = { buildRecommendations, generateForecast, loadInventorySnapshot };
+module.exports = {
+  buildBaselineResults,
+  buildRecommendations,
+  generateForecast,
+  getEligiblePairs,
+  loadForecastHistory,
+  loadInventorySnapshot,
+};

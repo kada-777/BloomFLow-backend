@@ -649,7 +649,6 @@ Dataset berasal dari daily sales dan dapat ditambah dengan inventory serta calen
 
 Setiap hasil forecast menyimpan:
 
-- `modelName`
 - `modelVersion`
 - `forecastMethod`
 - `trainingDataUntil`

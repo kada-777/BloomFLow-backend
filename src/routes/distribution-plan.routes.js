@@ -3,7 +3,7 @@ const {
   finalizePlan,
   getPlan,
   listPlans,
-  shipPlan,
+  createOrders,
   updatePlanItem,
 } = require("../controllers/distribution-plan.controller");
 const { authenticate, authorizeRoles } = require("../middlewares/auth.middleware");
@@ -35,10 +35,10 @@ router.post(
   finalizePlan
 );
 router.post(
-  "/distribution-plans/:id/ship",
+  "/distribution-plans/:id/create-orders",
   authenticate,
   authorizeRoles("STAFF_HEAD_OFFICE"),
-  shipPlan
+  createOrders
 );
 
 module.exports = router;

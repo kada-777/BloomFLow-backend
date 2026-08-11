@@ -90,6 +90,8 @@ erDiagram
         int flowerId FK
         decimal forecastDemand
         varchar forecastPeriod
+        enum forecastMethod
+        varchar modelVersion
         decimal confidenceInterval
     }
 
@@ -111,6 +113,7 @@ erDiagram
 
     distribution_orders {
         int id PK
+        int distributionPlanId FK
         int branchId FK
         enum status
         datetime shippedAt
@@ -269,7 +272,7 @@ UNIQUE (distribution_order_id, batch_id)
 | `BatchStatus` | AVAILABLE, DEPLETED |
 | `DistributionPlanStatus` | DRAFT, FINALIZED, ORDER_CREATED |
 | `DistributionOrderStatus` | DRAFT, IN_TRANSIT, RECEIVED, CANCELLED |
-| `ForecastMethod` | ML, BASELINE |
+| `ForecastMethod` | ML, BASELINE, MIXED |
 | `InventoryMovementType` | RECEIVING_IN, DISTRIBUTION_OUT, DISTRIBUTION_IN, SALE_OUT, DAMAGED_OUT |
 | `UserRole` | SUPERADMIN, STAFF_HEAD_OFFICE, STAFF_BRANCH |
 

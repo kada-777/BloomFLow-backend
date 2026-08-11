@@ -695,6 +695,15 @@ endpoints:
   transaction: ATOMIC
 - id: 36
   method: POST
+  path: /distributions/:id/cancel
+  summary: Membatalkan order draft
+  access:
+  - STAFF_HEAD_OFFICE
+  status_transition:
+    from: DRAFT
+    to: CANCELLED
+- id: 37
+  method: POST
   path: /distributions/:id/receive
   summary: Menerima order di cabang
   access:
@@ -705,7 +714,7 @@ endpoints:
   transaction: ATOMIC
   security:
   - branchId order harus sama dengan branchId JWT claim.
-- id: 37
+- id: 38
   method: GET
   path: /inventory-movements
   summary: Audit trail perubahan stok
@@ -715,7 +724,7 @@ endpoints:
   - STAFF_BRANCH
   scope_rules:
   - STAFF_BRANCH hanya melihat movement cabangnya.
-- id: 38
+- id: 39
   method: GET
   path: /dashboard
   summary: Dashboard analytics berdasarkan role

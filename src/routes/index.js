@@ -9,6 +9,8 @@ const inventoryRoutes = require("./inventory.routes");
 const dailySalesRoutes = require("./daily-sales.routes");
 const forecastRoutes = require("./forecast.routes");
 const distributionPlanRoutes = require("./distribution-plan.routes");
+const distributionOrderRoutes = require("./distribution-order.routes");
+const distributionReceivingRoutes = require("./distribution-receiving.routes");
 
 const router = express.Router();
 
@@ -21,6 +23,8 @@ router.use(inventoryRoutes);
 router.use(dailySalesRoutes);
 router.use(forecastRoutes);
 router.use(distributionPlanRoutes);
+router.use(distributionOrderRoutes);
+router.use(distributionReceivingRoutes);
 router.use(masterDataRoutes);
 
 module.exports = router;

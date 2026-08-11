@@ -9,7 +9,7 @@ Forecast memperkirakan permintaan per branch dan flower untuk planning horizon. 
 
 ## Output Contract
 
-Setiap hasil menyimpan `branchId`, `flowerId`, `forecastDemand`, `forecastMethod`, `modelName`, `modelVersion`, `trainingDataUntil`, dan `generatedAt`. Backend menolak output malformed, nonnumeric, negatif, atau horizon yang tidak cocok.
+Setiap hasil menyimpan `branchId`, `flowerId`, `forecastDemand`, `forecastMethod`, `modelVersion`, `trainingDataUntil`, dan `generatedAt`. Backend menolak output malformed, nonnumeric, negatif, atau horizon yang tidak cocok.
 
 ## Model and Fallback
 

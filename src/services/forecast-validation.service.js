@@ -74,7 +74,6 @@ function validateForecastResponse(response) {
     if (!isValidDate(row?.forecastDate)) rowErrors.push({ field: `${prefix}.forecastDate`, message: "forecastDate must use YYYY-MM-DD" });
     if (row?.forecastMethod !== response.forecastMethod) rowErrors.push({ field: `${prefix}.forecastMethod`, message: "forecastMethod does not match response" });
     if (row?.modelVersion !== response.modelVersion) rowErrors.push({ field: `${prefix}.modelVersion`, message: "modelVersion does not match response" });
-    if (typeof row?.modelName !== "string" || !row.modelName.trim()) rowErrors.push({ field: `${prefix}.modelName`, message: "modelName is required" });
     if (typeof row?.generatedAt !== "string" || Number.isNaN(Date.parse(row.generatedAt))) rowErrors.push({ field: `${prefix}.generatedAt`, message: "generatedAt must be a valid timestamp" });
 
     if (!rowErrors.length) {

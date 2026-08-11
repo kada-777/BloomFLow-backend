@@ -97,3 +97,31 @@ test("rejects a plan that is not FINALIZED", async () => {
     statusCode: 409,
   });
 });
+
+test("ships a DRAFT order using quantities from its linked finalized plan", async () => {
+  const transactionClient = makeTransactionClient([]);
+  transactionClient.distributionOrder.findUnique = jest.fn().mockResolvedValue({
+    id: 101,
+    branchId: 3,
+    status: "DRAFT",
+    distributionPlan: {
+      id: 9,
+      items: [{ branchId: 3, flowerId: 10, finalQuantity: "10.00", recommendedQuantity: "8.00" }],
+    },
+  });
+  transactionClient.distributionOrder.update.mockResolvedValue({ id: 101, status: "IN_TRANSIT" });
+  transactionClient.distributionPlan = undefined;
+  const prismaClient = {
+    $transaction: jest.fn(async (callback) => callback(transactionClient)),
+  };
+
+  await expect(shipmentService.shipOrder(101, { prismaClient })).resolves.toEqual({
+    orderId: 101,
+    branchId: 3,
+    status: "IN_TRANSIT",
+  });
+  expect(transactionClient.distributionOrder.update).toHaveBeenCalledWith(expect.objectContaining({
+    where: { id: 101 },
+    data: expect.objectContaining({ status: "IN_TRANSIT", shippedAt: expect.any(Date) }),
+  }));
+});
