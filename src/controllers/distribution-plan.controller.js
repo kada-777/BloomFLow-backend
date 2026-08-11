@@ -21,6 +21,15 @@ async function getPlan(req, res, next) {
   }
 }
 
+async function deletePlan(req, res, next) {
+  try {
+    const data = await distributionPlanService.remove(req.params.id);
+    res.json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function updatePlanItem(req, res, next) {
   try {
     const data = await distributionPlanService.updateItem(
@@ -61,4 +70,4 @@ async function createOrders(req, res, next) {
   }
 }
 
-module.exports = { createOrders, finalizePlan, getPlan, listPlans, shipPlan, updatePlanItem };
+module.exports = { createOrders, deletePlan, finalizePlan, getPlan, listPlans, shipPlan, updatePlanItem };

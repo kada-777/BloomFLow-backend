@@ -1,5 +1,6 @@
 jest.mock("../src/services/distribution-order.service", () => ({
   getById: jest.fn(),
+  list: jest.fn(),
 }));
 
 const orderService = require("../src/services/distribution-order.service");
@@ -15,4 +16,16 @@ test("returns the distribution order", async () => {
 
   expect(orderService.getById).toHaveBeenCalledWith("11", user);
   expect(response.json).toHaveBeenCalledWith({ success: true, data });
+});
+
+test("returns the paginated distribution order list", async () => {
+  const data = { data: [{ id: 11 }], pagination: { page: 1 } };
+  orderService.list.mockResolvedValue(data);
+  const response = { json: jest.fn() };
+  const user = { role: "STAFF_HEAD_OFFICE" };
+
+  await controller.listOrders({ query: { sort: "branch" }, user }, response, jest.fn());
+
+  expect(orderService.list).toHaveBeenCalledWith(expect.objectContaining({ page: 1, limit: 10 }), user, "branch");
+  expect(response.json).toHaveBeenCalledWith({ success: true, ...data });
 });

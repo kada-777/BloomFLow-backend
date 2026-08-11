@@ -8,10 +8,15 @@ function makePrisma() {
       findMany: jest.fn(),
       count: jest.fn(),
       update: jest.fn(),
+      delete: jest.fn(),
     },
     distributionPlanItem: {
       findUnique: jest.fn(),
       update: jest.fn(),
+      deleteMany: jest.fn(),
+    },
+    distributionOrder: {
+      deleteMany: jest.fn(),
     },
     $transaction: jest.fn(async (callback) => callback(makePrisma())),
   };
@@ -45,6 +50,20 @@ test("requires an adjustment reason when final quantity changes", async () => {
   ).rejects.toMatchObject({ statusCode: 422 });
 });
 
+test("requires an adjustment reason of at least five characters", async () => {
+  const prismaClient = makePrisma();
+  prismaClient.distributionPlanItem.findUnique.mockResolvedValue({
+    id: 4,
+    distributionPlan: { id: 2, status: "DRAFT" },
+    recommendedQuantity: "10.00",
+    finalQuantity: null,
+  });
+
+  await expect(
+    planService.updateItem(2, 4, { finalQuantity: "8.00", adjustmentReason: "low" }, { prismaClient })
+  ).rejects.toMatchObject({ statusCode: 422 });
+});
+
 test("finalization fills missing final quantities and changes plan status", async () => {
   const prismaClient = makePrisma();
   const transactionClient = makePrisma();
@@ -71,4 +90,38 @@ test("finalization fills missing final quantities and changes plan status", asyn
     where: { id: 2 },
     data: { status: "FINALIZED" },
   });
+});
+
+test("deletes an active plan with only draft orders", async () => {
+  const prismaClient = makePrisma();
+  const transactionClient = makePrisma();
+  transactionClient.distributionPlan.findUnique.mockResolvedValue({
+    id: 2,
+    orders: [{ id: 10, status: "DRAFT" }],
+  });
+  prismaClient.$transaction.mockImplementation(async (callback) => callback(transactionClient));
+
+  await expect(planService.remove(2, { prismaClient })).resolves.toEqual({ id: 2, deleted: true });
+  expect(transactionClient.distributionOrder.deleteMany).toHaveBeenCalledWith({
+    where: { distributionPlanId: 2 },
+  });
+  expect(transactionClient.distributionPlanItem.deleteMany).toHaveBeenCalledWith({
+    where: { distributionPlanId: 2 },
+  });
+  expect(transactionClient.distributionPlan.delete).toHaveBeenCalledWith({
+    where: { id: 2 },
+  });
+});
+
+test("rejects deleting a plan with shipped orders", async () => {
+  const prismaClient = makePrisma();
+  const transactionClient = makePrisma();
+  transactionClient.distributionPlan.findUnique.mockResolvedValue({
+    id: 2,
+    orders: [{ id: 10, status: "IN_TRANSIT" }],
+  });
+  prismaClient.$transaction.mockImplementation(async (callback) => callback(transactionClient));
+
+  await expect(planService.remove(2, { prismaClient })).rejects.toMatchObject({ statusCode: 409 });
+  expect(transactionClient.distributionPlan.delete).not.toHaveBeenCalled();
 });

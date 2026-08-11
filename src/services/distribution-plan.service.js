@@ -114,8 +114,8 @@ async function updateItem(planIdValue, itemIdValue, payload, dependencies = getD
   const currentQuantity = item.finalQuantity ?? item.recommendedQuantity;
   if (toMinorUnits(finalQuantity) !== toMinorUnits(currentQuantity)) {
     const reason = typeof payload.adjustmentReason === "string" ? payload.adjustmentReason.trim() : "";
-    if (!reason) {
-      validationError([{ field: "adjustmentReason", message: "adjustmentReason is required when quantity changes" }]);
+    if (reason.length < 5) {
+      validationError([{ field: "adjustmentReason", message: "adjustmentReason must be at least 5 characters when quantity changes" }]);
     }
     return dependencies.prismaClient.distributionPlanItem.update({
       where: { id: itemId },
@@ -162,4 +162,30 @@ async function finalize(idValue, dependencies = getDefaultDependencies()) {
   return getById(id, dependencies);
 }
 
-module.exports = { finalize, getById, list, parseQuantity, updateItem };
+async function remove(idValue, dependencies = getDefaultDependencies()) {
+  const id = parseId(idValue, "id");
+
+  await dependencies.prismaClient.$transaction(async (tx) => {
+    const plan = await tx.distributionPlan.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        orders: { select: { id: true, status: true } },
+      },
+    });
+    if (!plan) throw new HttpError(404, "Distribution plan not found");
+
+    const shippedOrder = plan.orders.find((order) => !["DRAFT", "CANCELLED"].includes(order.status));
+    if (shippedOrder) {
+      throw new HttpError(409, "Distribution plan with shipped orders cannot be deleted");
+    }
+
+    await tx.distributionOrder.deleteMany({ where: { distributionPlanId: id } });
+    await tx.distributionPlanItem.deleteMany({ where: { distributionPlanId: id } });
+    await tx.distributionPlan.delete({ where: { id } });
+  });
+
+  return { id, deleted: true };
+}
+
+module.exports = { finalize, getById, list, parseQuantity, remove, updateItem };

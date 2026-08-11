@@ -72,6 +72,12 @@ function buildBaselineResults({ branches, flowers, sales, pairs, cutoffDate, win
   return results;
 }
 
+function nextPlanningDate(cutoffDate) {
+  const planningDate = new Date(`${dateText(cutoffDate)}T00:00:00.000Z`);
+  planningDate.setUTCDate(planningDate.getUTCDate() + 1);
+  return planningDate;
+}
+
 async function loadForecastHistory(tx, cutoffDate) {
   const cutoff = new Date(`${dateText(cutoffDate)}T00:00:00.000Z`);
   const [branches, flowers, sales, minimumHistoryConfig] = await Promise.all([
@@ -240,51 +246,67 @@ function getDefaultDependencies() {
 }
 
 async function generateForecast(options = {}, dependencies = getDefaultDependencies()) {
-  const persisted = await dependencies.prismaClient.$transaction(async (tx) => {
-    const preliminarySales = await tx.dailySale.findMany({
-      select: { salesDate: true },
-    });
-    if (!preliminarySales.length && !options.forecastDate) {
-      throw new Error("Daily sales history is required to generate a forecast");
-    }
-    const cutoffDate = options.forecastDate
-      ?? preliminarySales.map((sale) => dateText(sale.salesDate)).sort().at(-1);
-    const forecastHistory = await loadForecastHistory(tx, cutoffDate);
-    const request = { forecastDate: cutoffDate, eligiblePairs: forecastHistory.eligiblePairs };
-    if (options.modelVersion) request.modelVersion = options.modelVersion;
+  const preliminarySales = await dependencies.prismaClient.dailySale.findMany({
+    select: { salesDate: true },
+  });
+  if (!preliminarySales.length && !options.forecastDate) {
+    throw new Error("Daily sales history is required to generate a forecast");
+  }
+  const cutoffDate = options.forecastDate
+    ?? preliminarySales.map((sale) => dateText(sale.salesDate)).sort().at(-1);
+  const planningDate = nextPlanningDate(cutoffDate);
+  const existingPlan = await dependencies.prismaClient.distributionPlan.findFirst({
+    where: { planningDate },
+    select: { id: true },
+    orderBy: { id: "asc" },
+  });
+  if (existingPlan) {
+    return { distributionPlanId: existingPlan.id, reused: true };
+  }
 
-    let mlResults = [];
-    let mlModelVersion = options.modelVersion ?? "hgb-v1";
-    if (forecastHistory.eligiblePairs.length) {
+  const forecastHistory = await loadForecastHistory(dependencies.prismaClient, cutoffDate);
+  const request = { forecastDate: cutoffDate, eligiblePairs: forecastHistory.eligiblePairs };
+  if (options.modelVersion) request.modelVersion = options.modelVersion;
+
+  let mlResults = [];
+  let mlModelVersion = options.modelVersion ?? "hgb-v1";
+  let useBaselineForAllPairs = false;
+  if (forecastHistory.eligiblePairs.length) {
+    try {
       const mlResponse = dependencies.responseValidator(await dependencies.forecastClient(request));
       validateEligibleResults(mlResponse.results, forecastHistory.eligiblePairs);
       mlResults = mlResponse.results;
       mlModelVersion = mlResponse.modelVersion;
+    } catch {
+      useBaselineForAllPairs = true;
     }
-    const baselineResults = buildBaselineResults({
-      branches: forecastHistory.branches,
-      flowers: forecastHistory.flowers,
-      sales: forecastHistory.sales,
-      pairs: forecastHistory.baselinePairs,
-      cutoffDate,
-    });
-    const results = [...mlResults, ...baselineResults];
-    const forecastMethod = mlResults.length && baselineResults.length
-      ? "MIXED"
-      : (mlResults.length ? "ML" : "BASELINE");
-    const modelVersion = forecastMethod === "MIXED"
-      ? "mixed"
-      : (mlResults.length ? mlModelVersion : "baseline-v1");
-    const dPlusOneResults = results.filter((result) => result.horizon === 1);
+  }
+  const baselineResults = buildBaselineResults({
+    branches: forecastHistory.branches,
+    flowers: forecastHistory.flowers,
+    sales: forecastHistory.sales,
+    pairs: useBaselineForAllPairs ? forecastHistory.allPairs : forecastHistory.baselinePairs,
+    cutoffDate,
+  });
+  const results = [...mlResults, ...baselineResults];
+  const forecastMethod = mlResults.length && baselineResults.length
+    ? "MIXED"
+    : (mlResults.length ? "ML" : "BASELINE");
+  const modelVersion = forecastMethod === "MIXED"
+    ? "mixed"
+    : (mlResults.length ? mlModelVersion : "baseline-v1");
+  const dPlusOneResults = results.filter((result) => result.horizon === 1);
 
-    const snapshot = await loadInventorySnapshot(tx);
-    const recommendations = buildRecommendations(
-      dPlusOneResults,
-      snapshot.branchLots,
-      snapshot.inTransit,
-      snapshot.headOfficeStock,
-      snapshot.safetyStock
-    );
+  const snapshot = await loadInventorySnapshot(dependencies.prismaClient);
+  const recommendations = buildRecommendations(
+    dPlusOneResults,
+    snapshot.branchLots,
+    snapshot.inTransit,
+    snapshot.headOfficeStock,
+    snapshot.safetyStock
+  );
+
+  const persisted = await dependencies.prismaClient.$transaction(async (tx) => {
     const forecastRun = await tx.forecastRun.create({
       data: {
         executedAt: new Date(results[0].generatedAt),
@@ -309,7 +331,7 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
 
     const distributionPlan = await tx.distributionPlan.create({
       data: {
-        planningDate: new Date(`${dPlusOneResults[0].forecastDate}T00:00:00.000Z`),
+        planningDate,
         status: "DRAFT",
         items: {
           create: recommendations.map((recommendation) => ({
@@ -335,4 +357,5 @@ module.exports = {
   getEligiblePairs,
   loadForecastHistory,
   loadInventorySnapshot,
+  nextPlanningDate,
 };

@@ -1,5 +1,15 @@
 const distributionOrderService = require("../services/distribution-order.service");
 const distributionShipmentService = require("../services/distribution-shipment.service");
+const { parsePagination } = require("../utils/pagination");
+
+async function listOrders(req, res, next) {
+  try {
+    const data = await distributionOrderService.list(parsePagination(req.query), req.user, req.query.sort);
+    res.json({ success: true, ...data });
+  } catch (error) {
+    next(error);
+  }
+}
 
 async function getOrder(req, res, next) {
   try {
@@ -28,4 +38,4 @@ async function cancelOrder(req, res, next) {
   }
 }
 
-module.exports = { cancelOrder, getOrder, shipOrder };
+module.exports = { cancelOrder, getOrder, listOrders, shipOrder };

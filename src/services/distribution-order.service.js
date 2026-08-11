@@ -1,5 +1,6 @@
 const prisma = require("../lib/prisma");
 const { HttpError } = require("../utils/http-error");
+const { buildPagination } = require("../utils/pagination");
 
 function parseId(value) {
   const id = Number(value);
@@ -49,6 +50,76 @@ const orderDetailSelect = {
     orderBy: { id: "asc" },
   },
 };
+
+const orderListSelect = {
+  id: true,
+  distributionPlanId: true,
+  branchId: true,
+  status: true,
+  shippedAt: true,
+  branch: { select: { id: true, name: true, location: true } },
+  distributionPlan: { select: { id: true, planningDate: true } },
+};
+
+const SORTS = new Set(["newest", "branch", "status"]);
+const STATUS_ORDER = new Map([
+  ["DRAFT", 1],
+  ["IN_TRANSIT", 2],
+  ["RECEIVED", 3],
+  ["CANCELLED", 4],
+]);
+
+function parseSort(value) {
+  if (value === undefined) return "newest";
+  if (typeof value !== "string" || !SORTS.has(value)) {
+    throw new HttpError(422, "Validation failed", [
+      { field: "sort", message: "sort must be one of newest, branch, or status" },
+    ]);
+  }
+  return value;
+}
+
+function orderByFor(sort) {
+  if (sort === "branch") return [{ branch: { name: "asc" } }, { id: "desc" }];
+  return [{ id: "desc" }];
+}
+
+async function list(pagination, user, sortValue, dependencies = { prismaClient: prisma }) {
+  const sort = parseSort(sortValue);
+  const where = user?.role === "STAFF_BRANCH" ? { branchId: user.branchId } : {};
+
+  if (sort === "status") {
+    const [rows, totalItems] = await dependencies.prismaClient.$transaction([
+      dependencies.prismaClient.distributionOrder.findMany({
+        where,
+        orderBy: orderByFor(sort),
+        select: orderListSelect,
+      }),
+      dependencies.prismaClient.distributionOrder.count({ where }),
+    ]);
+    const data = rows
+      .sort((left, right) => (
+        (STATUS_ORDER.get(left.status) || 99) - (STATUS_ORDER.get(right.status) || 99)
+        || right.id - left.id
+      ))
+      .slice(pagination.skip, pagination.skip + pagination.take);
+
+    return { data, pagination: { ...buildPagination(pagination.page, pagination.limit, totalItems), sort } };
+  }
+
+  const [data, totalItems] = await dependencies.prismaClient.$transaction([
+    dependencies.prismaClient.distributionOrder.findMany({
+      where,
+      orderBy: orderByFor(sort),
+      skip: pagination.skip,
+      take: pagination.take,
+      select: orderListSelect,
+    }),
+    dependencies.prismaClient.distributionOrder.count({ where }),
+  ]);
+
+  return { data, pagination: { ...buildPagination(pagination.page, pagination.limit, totalItems), sort } };
+}
 
 async function getById(idValue, user, dependencies = { prismaClient: prisma }) {
   const id = parseId(idValue);
@@ -146,4 +217,4 @@ async function cancel(idValue, dependencies = { prismaClient: prisma }) {
   return getById(id, null, dependencies);
 }
 
-module.exports = { cancel, createOrders, getById, parseId };
+module.exports = { cancel, createOrders, getById, list, orderByFor, parseId, parseSort };
