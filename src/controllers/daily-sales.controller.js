@@ -4,7 +4,7 @@ const { parsePagination } = require("../utils/pagination");
 async function listDailySales(req, res, next) {
   try {
     const branchId = req.user.role === "STAFF_BRANCH" ? req.user.branchId : undefined;
-    const result = await dailySalesService.list(branchId, parsePagination(req.query));
+    const result = await dailySalesService.list(branchId, parsePagination(req.query), req.query.sort);
     res.json({ success: true, ...result });
   } catch (err) {
     next(err);

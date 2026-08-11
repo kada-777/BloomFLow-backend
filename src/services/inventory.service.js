@@ -91,7 +91,7 @@ async function getBranchStock(pagination) {
   return paginateArray(result, pagination);
 }
 
-async function getMyBranchStock(branchId, pagination) {
+async function getMyBranchStock(branchId, pagination, sort = "default") {
   const lots = await prisma.branchStockLot.findMany({
     where: {
       branchId,
@@ -148,6 +148,15 @@ async function getMyBranchStock(branchId, pagination) {
     ...entry,
     totalQuantity: minorUnitsToString(entry.totalQuantity),
   }));
+
+  if (sort === "flower_asc" || sort === "flower_desc") {
+    data.sort((left, right) => {
+      const leftLabel = left.variety || left.flowerName || "";
+      const rightLabel = right.variety || right.flowerName || "";
+      const comparison = leftLabel.localeCompare(rightLabel, "id-ID", { sensitivity: "base" });
+      return sort === "flower_desc" ? comparison * -1 : comparison;
+    });
+  }
 
   return paginateArray(data, pagination);
 }

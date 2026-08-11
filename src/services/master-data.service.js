@@ -109,11 +109,12 @@ function parseId(value) {
   return id;
 }
 
-async function list(resourceName, pagination) {
+async function list(resourceName, pagination, sort = "default") {
   const resource = getResource(resourceName);
+  const orderDirection = resourceName === "flower" && sort === "name_desc" ? "desc" : "asc";
   const [data, totalItems] = await prisma.$transaction([
     prisma[resource.model].findMany({
-      orderBy: { name: "asc" },
+      orderBy: { name: orderDirection },
       skip: pagination.skip,
       take: pagination.take,
     }),

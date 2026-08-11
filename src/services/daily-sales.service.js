@@ -253,7 +253,7 @@ async function getById(idValue, branchId) {
   return dailySale;
 }
 
-async function list(branchId, pagination) {
+async function list(branchId, pagination, sort = "default") {
   const where = {};
   if (branchId) where.branchId = branchId;
 
@@ -274,7 +274,9 @@ async function list(branchId, pagination) {
     },
     _count: { select: { items: true } },
   };
-  const orderBy = [{ salesDate: "desc" }, { id: "desc" }];
+  const orderBy = sort === "oldest"
+    ? [{ salesDate: "asc" }, { id: "asc" }]
+    : [{ salesDate: "desc" }, { id: "desc" }];
   const [data, totalItems] = await prisma.$transaction([
     prisma.dailySale.findMany({ where, select, orderBy, skip: pagination.skip, take: pagination.take }),
     prisma.dailySale.count({ where }),
