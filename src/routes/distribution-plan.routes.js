@@ -1,9 +1,11 @@
 const express = require("express");
 const {
+  deletePlan,
   finalizePlan,
   getPlan,
   listPlans,
   createOrders,
+  shipPlan,
   updatePlanItem,
 } = require("../controllers/distribution-plan.controller");
 const { authenticate, authorizeRoles } = require("../middlewares/auth.middleware");
@@ -22,6 +24,12 @@ router.get(
   authorizeRoles("SUPERADMIN", "STAFF_HEAD_OFFICE"),
   getPlan
 );
+router.delete(
+  "/distribution-plans/:id",
+  authenticate,
+  authorizeRoles("STAFF_HEAD_OFFICE"),
+  deletePlan
+);
 router.patch(
   "/distribution-plans/:planId/items/:itemId",
   authenticate,
@@ -39,6 +47,12 @@ router.post(
   authenticate,
   authorizeRoles("STAFF_HEAD_OFFICE"),
   createOrders
+);
+router.post(
+  "/distribution-plans/:id/ship",
+  authenticate,
+  authorizeRoles("STAFF_HEAD_OFFICE"),
+  shipPlan
 );
 
 module.exports = router;

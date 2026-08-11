@@ -5,7 +5,10 @@ function makePrisma() {
   return {
     distributionOrder: {
       findUnique: jest.fn(),
+      findMany: jest.fn(),
+      count: jest.fn(),
     },
+    $transaction: jest.fn(async (operations) => Promise.all(operations)),
   };
 }
 
@@ -63,4 +66,50 @@ test("allows head-office users to view any order", async () => {
 test("rejects an invalid order ID", async () => {
   await expect(orderService.getById("not-an-id", branchUser, { prismaClient: makePrisma() }))
     .rejects.toBeInstanceOf(HttpError);
+});
+
+test("lists orders scoped to the branch user", async () => {
+  const prismaClient = makePrisma();
+  prismaClient.distributionOrder.findMany.mockResolvedValue([{ id: 11, branchId: 7 }]);
+  prismaClient.distributionOrder.count.mockResolvedValue(1);
+
+  await expect(
+    orderService.list({ page: 1, limit: 10, skip: 0, take: 10 }, branchUser, "newest", { prismaClient })
+  ).resolves.toEqual(expect.objectContaining({
+    data: [{ id: 11, branchId: 7 }],
+    pagination: expect.objectContaining({ totalItems: 1 }),
+  }));
+  expect(prismaClient.distributionOrder.findMany).toHaveBeenCalledWith(expect.objectContaining({
+    where: { branchId: 7 },
+    skip: 0,
+    take: 10,
+  }));
+});
+
+test("supports branch and status sorting", () => {
+  expect(orderService.orderByFor("branch")).toEqual([{ branch: { name: "asc" } }, { id: "desc" }]);
+  expect(orderService.orderByFor("status")).toEqual([{ id: "desc" }]);
+  expect(orderService.parseSort()).toBe("newest");
+  expect(() => orderService.parseSort("invalid")).toThrow();
+});
+
+test("sorts orders by operational status before pagination", async () => {
+  const prismaClient = makePrisma();
+  prismaClient.distributionOrder.findMany.mockResolvedValue([
+    { id: 14, status: "CANCELLED" },
+    { id: 13, status: "RECEIVED" },
+    { id: 12, status: "IN_TRANSIT" },
+    { id: 11, status: "DRAFT" },
+  ]);
+  prismaClient.distributionOrder.count.mockResolvedValue(4);
+
+  await expect(
+    orderService.list({ page: 1, limit: 2, skip: 0, take: 2 }, { role: "STAFF_HEAD_OFFICE" }, "status", { prismaClient })
+  ).resolves.toEqual(expect.objectContaining({
+    data: [
+      { id: 11, status: "DRAFT" },
+      { id: 12, status: "IN_TRANSIT" },
+    ],
+    pagination: expect.objectContaining({ totalItems: 4, totalPages: 2, sort: "status" }),
+  }));
 });

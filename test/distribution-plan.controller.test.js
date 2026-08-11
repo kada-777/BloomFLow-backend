@@ -3,6 +3,7 @@ jest.mock("../src/services/distribution-plan.service", () => ({
   list: jest.fn(),
   updateItem: jest.fn(),
   finalize: jest.fn(),
+  remove: jest.fn(),
 }));
 jest.mock("../src/services/distribution-shipment.service", () => ({
   shipPlan: jest.fn(),
@@ -32,5 +33,16 @@ test("ship controller returns created orders", async () => {
 
   expect(shipmentService.shipPlan).toHaveBeenCalledWith("2");
   expect(response.status).toHaveBeenCalledWith(201);
+  expect(response.json).toHaveBeenCalledWith({ success: true, data });
+});
+
+test("delete controller returns deleted plan", async () => {
+  const data = { id: 2, deleted: true };
+  planService.remove.mockResolvedValue(data);
+  const response = { json: jest.fn() };
+
+  await controller.deletePlan({ params: { id: "2" } }, response, jest.fn());
+
+  expect(planService.remove).toHaveBeenCalledWith("2");
   expect(response.json).toHaveBeenCalledWith({ success: true, data });
 });

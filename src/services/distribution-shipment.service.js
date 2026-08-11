@@ -1,5 +1,5 @@
 const { HttpError } = require("../utils/http-error");
-const { allocateHOBatches, minorUnitsToString, toMinorUnits } = require("../utils/fifo");
+const { allocateHOBatches, toMinorUnits } = require("../utils/fifo");
 
 function parseId(value) {
   const id = Number(value);
@@ -13,6 +13,41 @@ function parseId(value) {
 
 function getDefaultDependencies() {
   return { prismaClient: require("../lib/prisma") };
+}
+
+async function shipItemsForOrder(tx, order, items) {
+  for (const item of items) {
+    const quantity = item.finalQuantity ?? item.recommendedQuantity;
+    if (toMinorUnits(quantity) <= 0n) continue;
+
+    const allocations = await allocateHOBatches(tx, {
+      flowerId: item.flowerId,
+      quantity,
+    });
+    for (const allocation of allocations) {
+      await tx.distributionBatchAllocation.create({
+        data: {
+          distributionOrderId: order.id,
+          batchId: allocation.batchId,
+          quantity: allocation.allocatedQuantity,
+        },
+      });
+      await tx.inventoryMovement.create({
+        data: {
+          flowerId: item.flowerId,
+          locationType: "HO",
+          branchId: null,
+          batchId: allocation.batchId,
+          type: "DISTRIBUTION_OUT",
+          quantity: allocation.allocatedQuantity,
+          qtyBefore: allocation.qtyBefore,
+          qtyAfter: allocation.qtyAfter,
+          referenceType: "DISTRIBUTION_ORDER",
+          referenceId: order.id,
+        },
+      });
+    }
+  }
 }
 
 async function shipOrder(idValue, dependencies = getDefaultDependencies()) {
@@ -45,38 +80,7 @@ async function shipOrder(idValue, dependencies = getDefaultDependencies()) {
     }
 
     const items = order.distributionPlan.items.filter((item) => item.branchId === order.branchId);
-    for (const item of items) {
-      const quantity = item.finalQuantity ?? item.recommendedQuantity;
-      if (toMinorUnits(quantity) <= 0n) continue;
-
-      const allocations = await allocateHOBatches(tx, {
-        flowerId: item.flowerId,
-        quantity,
-      });
-      for (const allocation of allocations) {
-        await tx.distributionBatchAllocation.create({
-          data: {
-            distributionOrderId: order.id,
-            batchId: allocation.batchId,
-            quantity: allocation.allocatedQuantity,
-          },
-        });
-        await tx.inventoryMovement.create({
-          data: {
-            flowerId: item.flowerId,
-            locationType: "HO",
-            branchId: null,
-            batchId: allocation.batchId,
-            type: "DISTRIBUTION_OUT",
-            quantity: allocation.allocatedQuantity,
-            qtyBefore: allocation.qtyBefore,
-            qtyAfter: allocation.qtyAfter,
-            referenceType: "DISTRIBUTION_ORDER",
-            referenceId: order.id,
-          },
-        });
-      }
-    }
+    await shipItemsForOrder(tx, order, items);
 
     await tx.distributionOrder.update({
       where: { id: order.id },
@@ -106,69 +110,36 @@ async function shipPlan(idValue, dependencies = getDefaultDependencies()) {
           },
           orderBy: [{ branchId: "asc" }, { flowerId: "asc" }],
         },
+        orders: {
+          where: { status: "DRAFT" },
+          select: { id: true, branchId: true, status: true },
+          orderBy: { branchId: "asc" },
+        },
       },
     });
     if (!plan) throw new HttpError(404, "Distribution plan not found");
-    if (plan.status !== "FINALIZED") {
-      throw new HttpError(409, "Only FINALIZED distribution plans can be shipped");
+    if (plan.status !== "ORDER_CREATED") {
+      throw new HttpError(409, "Only ORDER_CREATED distribution plans can be shipped");
+    }
+    if (!plan.orders.length) {
+      throw new HttpError(409, "Distribution plan has no DRAFT orders to ship");
     }
 
+    const shippedAt = new Date();
     const orders = [];
-    for (const item of plan.items) {
-      const quantity = item.finalQuantity ?? item.recommendedQuantity;
-      if (toMinorUnits(quantity) <= 0n) continue;
-
-      const order = await tx.distributionOrder.create({
-        data: { branchId: item.branchId, status: "DRAFT" },
-        select: { id: true },
-      });
-      const allocations = await allocateHOBatches(tx, {
-        flowerId: item.flowerId,
-        quantity,
-      });
-
-      for (const allocation of allocations) {
-        await tx.distributionBatchAllocation.create({
-          data: {
-            distributionOrderId: order.id,
-            batchId: allocation.batchId,
-            quantity: allocation.allocatedQuantity,
-          },
-        });
-        await tx.inventoryMovement.create({
-          data: {
-            flowerId: item.flowerId,
-            locationType: "HO",
-            branchId: null,
-            batchId: allocation.batchId,
-            type: "DISTRIBUTION_OUT",
-            quantity: allocation.allocatedQuantity,
-            qtyBefore: allocation.qtyBefore,
-            qtyAfter: allocation.qtyAfter,
-            referenceType: "DISTRIBUTION_ORDER",
-            referenceId: order.id,
-          },
-        });
-      }
-
-      const shippedAt = new Date();
+    for (const order of plan.orders) {
+      const items = plan.items.filter((item) => item.branchId === order.branchId);
+      await shipItemsForOrder(tx, order, items);
       await tx.distributionOrder.update({
         where: { id: order.id },
         data: { status: "IN_TRANSIT", shippedAt },
       });
       orders.push({
         orderId: order.id,
-        branchId: item.branchId,
-        flowerId: item.flowerId,
-        quantity: minorUnitsToString(toMinorUnits(quantity)),
+        branchId: order.branchId,
         status: "IN_TRANSIT",
       });
     }
-
-    await tx.distributionPlan.update({
-      where: { id: planId },
-      data: { status: "ORDER_CREATED" },
-    });
 
     return { planId, orders };
   }, { timeout: 120000 });
