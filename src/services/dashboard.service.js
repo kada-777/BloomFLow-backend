@@ -45,7 +45,7 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
     ]);
   }
   const branchFilter = branchId ? { branchId } : {};
-  const [sales, receivings, movements, totalBranches, totalFarms] = await Promise.all([
+  const [sales, receivings, movements, openingMovements, totalBranches, totalFarms] = await Promise.all([
     prisma.dailySale.findMany({
       where: { salesDate: { gte: dateFrom, lt: dateTo }, ...branchFilter },
       select: { id: true, salesDate: true, branch: { select: { name: true } }, _count: { select: { items: true } } },
@@ -61,6 +61,10 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
       select: { id: true, type: true, quantity: true, flowerStatus: true, locationType: true, createdAt: true, flower: { select: { name: true, variety: true } } },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     }),
+    prisma.inventoryMovement.findMany({
+      where: { createdAt: { lt: dateFrom }, ...branchFilter },
+      select: { type: true, quantity: true, locationType: true },
+    }),
     prisma.branch.count(),
     prisma.farm.count(),
   ]);
@@ -69,6 +73,10 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
   const headOfficeRemoved = sumMovement(movements, (movement) => movement.locationType === "HO" && REMOVAL_TYPES.has(movement.type));
   const branchAdded = sumMovement(movements, (movement) => movement.locationType === "BRANCH" && ADDITION_TYPES.has(movement.type));
   const branchRemoved = sumMovement(movements, (movement) => movement.locationType === "BRANCH" && REMOVAL_TYPES.has(movement.type));
+  const headOfficeOpening = sumMovement(openingMovements, (movement) => movement.locationType === "HO" && movement.type === "RECEIVING_IN")
+    - sumMovement(openingMovements, (movement) => movement.locationType === "HO" && REMOVAL_TYPES.has(movement.type));
+  const branchOpening = sumMovement(openingMovements, (movement) => movement.locationType === "BRANCH" && ADDITION_TYPES.has(movement.type))
+    - sumMovement(openingMovements, (movement) => movement.locationType === "BRANCH" && REMOVAL_TYPES.has(movement.type));
 
   const statusTotals = new Map([["FRESH", 0], ["GRADE_C", 0], ["DAMAGED", 0]]);
   movements.forEach((movement) => {
@@ -100,8 +108,8 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
     summary: {
       totalBranches,
       totalFarms,
-      headOfficeStock: headOfficeAdded - headOfficeRemoved,
-      totalBranchStock: branchAdded - branchRemoved,
+      headOfficeStock: headOfficeOpening + headOfficeAdded - headOfficeRemoved,
+      totalBranchStock: branchOpening + branchAdded - branchRemoved,
       stockAdded: headOfficeAdded + branchAdded,
       stockRemoved: headOfficeRemoved + branchRemoved,
       totalSales: sales.length,

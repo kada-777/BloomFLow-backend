@@ -24,8 +24,8 @@ test("returns the paginated distribution order list", async () => {
   const response = { json: jest.fn() };
   const user = { role: "STAFF_HEAD_OFFICE" };
 
-  await controller.listOrders({ query: { sort: "branch" }, user }, response, jest.fn());
+  await controller.listOrders({ query: { sort: "oldest", status: "received" }, user }, response, jest.fn());
 
-  expect(orderService.list).toHaveBeenCalledWith(expect.objectContaining({ page: 1, limit: 10 }), user, "branch");
+  expect(orderService.list).toHaveBeenCalledWith(expect.objectContaining({ page: 1, limit: 10 }), user, "oldest", "received");
   expect(response.json).toHaveBeenCalledWith({ success: true, ...data });
 });

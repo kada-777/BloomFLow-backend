@@ -86,14 +86,15 @@ test("lists orders scoped to the branch user", async () => {
   }));
 });
 
-test("supports branch and status sorting", () => {
-  expect(orderService.orderByFor("branch")).toEqual([{ branch: { name: "asc" } }, { id: "desc" }]);
-  expect(orderService.orderByFor("status")).toEqual([{ id: "desc" }]);
+test("supports newest and oldest sorting", () => {
+  expect(orderService.orderByFor("newest")).toEqual([{ id: "desc" }]);
+  expect(orderService.orderByFor("oldest")).toEqual([{ id: "asc" }]);
   expect(orderService.parseSort()).toBe("newest");
+  expect(orderService.parseSort("oldest")).toBe("oldest");
   expect(() => orderService.parseSort("invalid")).toThrow();
 });
 
-test("sorts orders by operational status before pagination", async () => {
+test("sorts orders from oldest first", async () => {
   const prismaClient = makePrisma();
   prismaClient.distributionOrder.findMany.mockResolvedValue([
     { id: 14, status: "CANCELLED" },
@@ -104,12 +105,28 @@ test("sorts orders by operational status before pagination", async () => {
   prismaClient.distributionOrder.count.mockResolvedValue(4);
 
   await expect(
-    orderService.list({ page: 1, limit: 2, skip: 0, take: 2 }, { role: "STAFF_HEAD_OFFICE" }, "status", { prismaClient })
+    orderService.list({ page: 1, limit: 2, skip: 0, take: 2 }, { role: "STAFF_HEAD_OFFICE" }, "oldest", { prismaClient })
   ).resolves.toEqual(expect.objectContaining({
-    data: [
-      { id: 11, status: "DRAFT" },
-      { id: 12, status: "IN_TRANSIT" },
-    ],
-    pagination: expect.objectContaining({ totalItems: 4, totalPages: 2, sort: "status" }),
+    data: [{ id: 14, status: "CANCELLED" }, { id: 13, status: "RECEIVED" }],
+    pagination: expect.objectContaining({ totalItems: 4, totalPages: 2, sort: "oldest" }),
   }));
+});
+
+test("filters orders by status", async () => {
+  const prismaClient = makePrisma();
+  prismaClient.distributionOrder.findMany.mockResolvedValue([{ id: 12, status: "IN_TRANSIT" }]);
+  prismaClient.distributionOrder.count.mockResolvedValue(1);
+
+  await expect(
+    orderService.list({ page: 1, limit: 10, skip: 0, take: 10 }, { role: "STAFF_HEAD_OFFICE" }, "newest", "in_transit", { prismaClient })
+  ).resolves.toEqual(expect.objectContaining({ data: [{ id: 12, status: "IN_TRANSIT" }] }));
+  expect(prismaClient.distributionOrder.findMany).toHaveBeenCalledWith(expect.objectContaining({
+    where: { status: "IN_TRANSIT" },
+  }));
+});
+
+test("rejects an invalid status filter", async () => {
+  await expect(
+    orderService.list({ page: 1, limit: 10, skip: 0, take: 10 }, { role: "STAFF_HEAD_OFFICE" }, "newest", "unknown", { prismaClient: makePrisma() })
+  ).rejects.toMatchObject({ statusCode: 422 });
 });

@@ -4,7 +4,9 @@ const { parsePagination } = require("../utils/pagination");
 
 async function listOrders(req, res, next) {
   try {
-    const data = await distributionOrderService.list(parsePagination(req.query), req.user, req.query.sort);
+    const args = [parsePagination(req.query), req.user, req.query.sort];
+    if (req.query.status) args.push(req.query.status);
+    const data = await distributionOrderService.list(...args);
     res.json({ success: true, ...data });
   } catch (error) {
     next(error);

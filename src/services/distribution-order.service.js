@@ -61,51 +61,38 @@ const orderListSelect = {
   distributionPlan: { select: { id: true, planningDate: true } },
 };
 
-const SORTS = new Set(["newest", "branch", "status"]);
-const STATUS_ORDER = new Map([
-  ["DRAFT", 1],
-  ["IN_TRANSIT", 2],
-  ["RECEIVED", 3],
-  ["CANCELLED", 4],
-]);
+const SORTS = new Set(["newest", "oldest"]);
 
 function parseSort(value) {
   if (value === undefined) return "newest";
   if (typeof value !== "string" || !SORTS.has(value)) {
     throw new HttpError(422, "Validation failed", [
-      { field: "sort", message: "sort must be one of newest, branch, or status" },
+      { field: "sort", message: "sort must be one of newest or oldest" },
     ]);
   }
   return value;
 }
 
 function orderByFor(sort) {
-  if (sort === "branch") return [{ branch: { name: "asc" } }, { id: "desc" }];
-  return [{ id: "desc" }];
+  return [{ id: sort === "oldest" ? "asc" : "desc" }];
 }
 
-async function list(pagination, user, sortValue, dependencies = { prismaClient: prisma }) {
-  const sort = parseSort(sortValue);
-  const where = user?.role === "STAFF_BRANCH" ? { branchId: user.branchId } : {};
-
-  if (sort === "status") {
-    const [rows, totalItems] = await dependencies.prismaClient.$transaction([
-      dependencies.prismaClient.distributionOrder.findMany({
-        where,
-        orderBy: orderByFor(sort),
-        select: orderListSelect,
-      }),
-      dependencies.prismaClient.distributionOrder.count({ where }),
-    ]);
-    const data = rows
-      .sort((left, right) => (
-        (STATUS_ORDER.get(left.status) || 99) - (STATUS_ORDER.get(right.status) || 99)
-        || right.id - left.id
-      ))
-      .slice(pagination.skip, pagination.skip + pagination.take);
-
-    return { data, pagination: { ...buildPagination(pagination.page, pagination.limit, totalItems), sort } };
+async function list(pagination, user, sortValue, statusValue, dependencies = { prismaClient: prisma }) {
+  if (statusValue && typeof statusValue === "object") {
+    dependencies = statusValue;
+    statusValue = undefined;
   }
+  const sort = parseSort(sortValue);
+  const status = user?.role === "STAFF_HEAD_OFFICE" && statusValue && statusValue !== "all"
+    ? String(statusValue).toUpperCase()
+    : null;
+  if (status && !["DRAFT", "IN_TRANSIT", "RECEIVED", "CANCELLED"].includes(status)) {
+    throw new HttpError(422, "Validation failed", [{ field: "status", message: "Invalid distribution status" }]);
+  }
+  const where = {
+    ...(user?.role === "STAFF_BRANCH" ? { branchId: user.branchId } : {}),
+    ...(status ? { status } : {}),
+  };
 
   const [data, totalItems] = await dependencies.prismaClient.$transaction([
     dependencies.prismaClient.distributionOrder.findMany({
