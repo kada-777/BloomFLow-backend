@@ -220,6 +220,7 @@ async function create(payload) {
           locationType: "HO",
           batchId: batch.id,
           type: "RECEIVING_IN",
+          flowerStatus: "FRESH",
           quantity: item.acceptedQuantity,
           qtyBefore: "0",
           qtyAfter: item.acceptedQuantity,

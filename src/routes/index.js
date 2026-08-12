@@ -11,6 +11,7 @@ const forecastRoutes = require("./forecast.routes");
 const distributionPlanRoutes = require("./distribution-plan.routes");
 const distributionOrderRoutes = require("./distribution-order.routes");
 const distributionReceivingRoutes = require("./distribution-receiving.routes");
+const dashboardRoutes = require("./dashboard.routes");
 
 const router = express.Router();
 
@@ -25,6 +26,7 @@ router.use(forecastRoutes);
 router.use(distributionPlanRoutes);
 router.use(distributionOrderRoutes);
 router.use(distributionReceivingRoutes);
+router.use(dashboardRoutes);
 router.use(masterDataRoutes);
 
 module.exports = router;

@@ -50,6 +50,12 @@ enum InventoryMovementType {
   DAMAGED_OUT
 }
 
+enum FlowerStatus {
+  FRESH
+  GRADE_C
+  DAMAGED
+}
+
 enum InventoryReferenceType {
   RECEIVING
   DISTRIBUTION_ORDER
@@ -344,6 +350,7 @@ model InventoryMovement {
   branchId      Int?
   batchId       Int?
   type          InventoryMovementType
+  flowerStatus  FlowerStatus           @default(FRESH)
   quantity      Decimal                @db.Decimal(10, 2)
   qtyBefore     Decimal                @db.Decimal(10, 2)
   qtyAfter      Decimal                @db.Decimal(10, 2)

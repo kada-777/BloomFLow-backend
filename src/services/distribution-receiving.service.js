@@ -178,6 +178,7 @@ async function receive(idValue, payload, user, dependencies = { prismaClient: pr
           branchId: order.branchId,
           batchId: null,
           type: "DISTRIBUTION_IN",
+          flowerStatus: "FRESH",
           quantity: item.receivedQuantity,
           qtyBefore: minorUnitsToString(before),
           qtyAfter: minorUnitsToString(after),

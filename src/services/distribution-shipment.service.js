@@ -39,6 +39,7 @@ async function shipItemsForOrder(tx, order, items) {
           branchId: null,
           batchId: allocation.batchId,
           type: "DISTRIBUTION_OUT",
+          flowerStatus: "FRESH",
           quantity: allocation.allocatedQuantity,
           qtyBefore: allocation.qtyBefore,
           qtyAfter: allocation.qtyAfter,

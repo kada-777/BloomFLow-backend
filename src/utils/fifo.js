@@ -53,6 +53,7 @@ async function allocateHOBatches(tx, { flowerId, quantity }) {
       allocatedQuantity: minorUnitsToString(allocate),
       qtyBefore: minorUnitsToString(available),
       qtyAfter: minorUnitsToString(newAvailable),
+      flowerStatus: "FRESH",
     });
 
     remaining -= allocate;
