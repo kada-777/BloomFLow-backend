@@ -15,15 +15,15 @@ function parsePositiveInteger(value, field, errors) {
   return parsed;
 }
 
-function normalizeDecimal(value, field, errors) {
+function normalizeInteger(value, field, errors) {
   if (typeof value !== "string" && typeof value !== "number") {
-    errors.push({ field, message: `${field} must be a non-negative decimal` });
+    errors.push({ field, message: `${field} must be a non-negative integer` });
     return undefined;
   }
 
   const normalized = String(value).trim();
-  if (!/^\d+(\.\d{1,2})?$/.test(normalized)) {
-    errors.push({ field, message: `${field} must be a non-negative decimal` });
+  if (!/^\d+$/.test(normalized)) {
+    errors.push({ field, message: `${field} must be a non-negative integer` });
     return undefined;
   }
 
@@ -72,10 +72,10 @@ function validatePayload(payload) {
       flowerIds.add(flowerId);
     }
 
-    const shippedQuantity = normalizeDecimal(item.shippedQuantity, `${prefix}.shippedQuantity`, errors);
-    const actualReceivedQuantity = normalizeDecimal(item.actualReceivedQuantity, `${prefix}.actualReceivedQuantity`, errors);
-    const acceptedQuantity = normalizeDecimal(item.acceptedQuantity, `${prefix}.acceptedQuantity`, errors);
-    const unusableQuantity = normalizeDecimal(item.unusableQuantity, `${prefix}.unusableQuantity`, errors);
+    const shippedQuantity = normalizeInteger(item.shippedQuantity, `${prefix}.shippedQuantity`, errors);
+    const actualReceivedQuantity = normalizeInteger(item.actualReceivedQuantity, `${prefix}.actualReceivedQuantity`, errors);
+    const acceptedQuantity = normalizeInteger(item.acceptedQuantity, `${prefix}.acceptedQuantity`, errors);
+    const unusableQuantity = normalizeInteger(item.unusableQuantity, `${prefix}.unusableQuantity`, errors);
     if (item.unusableNotes !== undefined && item.unusableNotes !== null && typeof item.unusableNotes !== "string") {
       errors.push({ field: `${prefix}.unusableNotes`, message: "unusableNotes must be a string or null" });
     }
