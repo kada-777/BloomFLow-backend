@@ -2,15 +2,15 @@ const prisma = require("../lib/prisma");
 const { HttpError } = require("../utils/http-error");
 const { buildPagination, parsePagination } = require("../utils/pagination");
 
-const VALID_RANGES = new Set([7, 30, 60]);
+const VALID_RANGES = new Set([1, 7, 30, 60]);
 const ADDITION_TYPES = new Set(["RECEIVING_IN", "DISTRIBUTION_IN"]);
 const REMOVAL_TYPES = new Set(["DISTRIBUTION_OUT", "SALE_OUT", "DAMAGED_OUT"]);
 
 function getDateRange(daysValue) {
-  const days = Number(daysValue);
+  const days = daysValue === "today" ? 1 : Number(daysValue);
   if (!VALID_RANGES.has(days)) {
     throw new HttpError(422, "Validation failed", [
-      { field: "days", message: "days must be one of 7, 30, or 60" },
+      { field: "days", message: "period must be today, 7, 30, or 60" },
     ]);
   }
 
@@ -112,7 +112,12 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
   const activities = allActivities.slice(activityPagination.skip, activityPagination.skip + activityPagination.take);
 
   return {
-    period: { days, dateFrom: dateFrom.toISOString(), dateTo: new Date(dateTo.getTime() - 1).toISOString() },
+    period: {
+      days,
+      label: days === 1 && String(daysValue).toLowerCase() === "today" ? "Today" : `Last ${days} days`,
+      dateFrom: dateFrom.toISOString(),
+      dateTo: new Date(dateTo.getTime() - 1).toISOString(),
+    },
     summary: {
       totalBranches,
       totalFarms,

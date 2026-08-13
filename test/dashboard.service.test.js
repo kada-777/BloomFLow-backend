@@ -87,3 +87,20 @@ test("returns head office receiving, distribution out, and damaged stock for the
     _sum: { unusableQuantity: true },
   });
 });
+
+test("accepts today as a one-day dashboard period", async () => {
+  prisma.dailySale.findMany.mockResolvedValue([]);
+  prisma.receiving.findMany.mockResolvedValue([]);
+  prisma.inventoryMovement.findMany.mockResolvedValue([]);
+  prisma.branch.count.mockResolvedValue(1);
+  prisma.farm.count.mockResolvedValue(1);
+  prisma.dailySaleItem.findMany.mockResolvedValue([]);
+  prisma.distributionOrder.count.mockResolvedValue(0);
+  prisma.receivingItem.aggregate.mockResolvedValue({ _sum: { unusableQuantity: 0 } });
+
+  const dashboard = await getHeadOfficeDashboard("today");
+
+  expect(dashboard.period.days).toBe(1);
+  expect(new Date(dashboard.period.dateTo).getTime() - new Date(dashboard.period.dateFrom).getTime())
+    .toBe(24 * 60 * 60 * 1000 - 1);
+});

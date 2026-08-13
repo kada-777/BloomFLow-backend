@@ -3,7 +3,7 @@ const { getHeadOfficeDashboard, getBranchDashboard } = require("../services/dash
 async function getHeadOfficeDashboardHandler(req, res, next) {
   try {
     const data = await getHeadOfficeDashboard(
-      req.query.days || 7,
+      req.query.days || "today",
       req.query.activityPage || 1,
       req.query.activityLimit || 10,
       req.user.role === "STAFF_BRANCH" ? req.user.branchId : req.query.branchId,
@@ -19,7 +19,7 @@ module.exports = { getHeadOfficeDashboard: getHeadOfficeDashboardHandler };
 async function getBranchDashboardHandler(req, res, next) {
   try {
     const data = await getBranchDashboard(
-      req.query.days || 7,
+      req.query.days || "today",
       req.query.activityPage || 1,
       req.query.activityLimit || 10,
       req.user.branchId,
