@@ -33,7 +33,7 @@ function sumMovement(movements, predicate) {
     .reduce((total, movement) => total + number(movement.quantity), 0);
 }
 
-async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activityLimitValue = "10", branchIdValue) {
+async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activityLimitValue = "10", branchIdValue, options = {}) {
   const { days, dateFrom, dateTo } = getDateRange(daysValue);
   const activityPagination = parsePagination({ page: activityPageValue, limit: activityLimitValue });
   const branchId = branchIdValue === undefined || branchIdValue === "all"
@@ -45,14 +45,15 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
     ]);
   }
   const branchFilter = branchId ? { branchId } : {};
-  const [sales, receivings, movements, openingMovements, totalBranches, totalFarms, flowersInTransit] = await Promise.all([
+  const isBranchDashboard = options.scope === "branch";
+  const [sales, receivings, movements, openingMovements, totalBranches, totalFarms, flowersInTransit, damagedReceiving] = await Promise.all([
     prisma.dailySale.findMany({
       where: { salesDate: { gte: dateFrom, lt: dateTo }, ...branchFilter },
       select: { id: true, salesDate: true, branch: { select: { name: true } }, _count: { select: { items: true } } },
       orderBy: [{ salesDate: "desc" }, { id: "desc" }],
     }),
     prisma.receiving.findMany({
-      where: { receivedDate: { gte: dateFrom, lt: dateTo } },
+      where: isBranchDashboard ? { id: -1 } : { receivedDate: { gte: dateFrom, lt: dateTo } },
       select: { id: true, receivedDate: true, farm: { select: { name: true } }, _count: { select: { items: true } } },
       orderBy: [{ receivedDate: "desc" }, { id: "desc" }],
     }),
@@ -65,15 +66,21 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
       where: { createdAt: { lt: dateFrom }, ...branchFilter },
       select: { type: true, quantity: true, locationType: true },
     }),
-    prisma.branch.count(),
-    prisma.farm.count(),
+    isBranchDashboard ? Promise.resolve(0) : prisma.branch.count(),
+    isBranchDashboard ? Promise.resolve(0) : prisma.farm.count(),
     prisma.distributionOrder.count({ where: { ...branchFilter, status: "IN_TRANSIT" } }),
+    prisma.receivingItem.aggregate({
+      where: isBranchDashboard ? { id: -1 } : { receiving: { receivedDate: { gte: dateFrom, lt: dateTo } } },
+      _sum: { unusableQuantity: true },
+    }),
   ]);
 
   const headOfficeAdded = sumMovement(movements, (movement) => movement.locationType === "HO" && movement.type === "RECEIVING_IN");
   const headOfficeRemoved = sumMovement(movements, (movement) => movement.locationType === "HO" && REMOVAL_TYPES.has(movement.type));
   const branchAdded = sumMovement(movements, (movement) => movement.locationType === "BRANCH" && ADDITION_TYPES.has(movement.type));
   const branchRemoved = sumMovement(movements, (movement) => movement.locationType === "BRANCH" && REMOVAL_TYPES.has(movement.type));
+  const branchSoldOut = sumMovement(movements, (movement) => movement.locationType === "BRANCH" && movement.type === "SALE_OUT");
+  const branchDamagedOut = sumMovement(movements, (movement) => movement.locationType === "BRANCH" && movement.type === "DAMAGED_OUT");
   const headOfficeOpening = sumMovement(openingMovements, (movement) => movement.locationType === "HO" && movement.type === "RECEIVING_IN")
     - sumMovement(openingMovements, (movement) => movement.locationType === "HO" && REMOVAL_TYPES.has(movement.type));
   const branchOpening = sumMovement(openingMovements, (movement) => movement.locationType === "BRANCH" && ADDITION_TYPES.has(movement.type))
@@ -111,6 +118,19 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
       totalFarms,
       headOfficeStock: headOfficeOpening + headOfficeAdded - headOfficeRemoved,
       totalBranchStock: branchOpening + branchAdded - branchRemoved,
+      headOfficeStockAdded: headOfficeAdded,
+      headOfficeStockRemoved: headOfficeRemoved,
+      headOfficeNetStockActivity: headOfficeAdded - headOfficeRemoved,
+      totalBranchStockAdded: branchAdded,
+      totalBranchStockRemoved: branchRemoved,
+      totalBranchNetStockActivity: branchAdded - branchRemoved,
+      branchStockReceived: branchAdded,
+      branchStockOut: branchSoldOut + branchDamagedOut,
+      branchSoldOut,
+      branchDamagedOut,
+      headOfficeReceivedStock: headOfficeAdded,
+      headOfficeStockOut: sumMovement(movements, (movement) => movement.locationType === "HO" && movement.type === "DISTRIBUTION_OUT"),
+      headOfficeDamagedStock: number(damagedReceiving?._sum?.unusableQuantity),
       stockAdded: headOfficeAdded + branchAdded,
       stockRemoved: headOfficeRemoved + branchRemoved,
       totalSales: sales.length,
@@ -132,4 +152,8 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
   };
 }
 
-module.exports = { getHeadOfficeDashboard };
+async function getBranchDashboard(daysValue, activityPageValue = "1", activityLimitValue = "10", branchIdValue) {
+  return getHeadOfficeDashboard(daysValue, activityPageValue, activityLimitValue, branchIdValue, { scope: "branch" });
+}
+
+module.exports = { getHeadOfficeDashboard, getBranchDashboard };

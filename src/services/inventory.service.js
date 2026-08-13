@@ -188,18 +188,24 @@ async function getMyBranchFlowerDetail(branchId, flowerIdValue) {
   }
 
   const sourceOrderIds = [...new Set(lots.map((lot) => lot.sourceOrderId))];
-  const allocations = await prisma.distributionBatchAllocation.findMany({
-    where: {
-      distributionOrderId: { in: sourceOrderIds },
-      batch: { flowerId },
-    },
-    select: {
-      distributionOrderId: true,
-      id: true,
-      batch: { select: { batchNumber: true, receivedDate: true } },
-    },
-    orderBy: [{ distributionOrderId: "asc" }, { id: "asc" }],
-  });
+  const [allocations, orders] = await Promise.all([
+    prisma.distributionBatchAllocation.findMany({
+      where: {
+        distributionOrderId: { in: sourceOrderIds },
+        batch: { flowerId },
+      },
+      select: {
+        distributionOrderId: true,
+        id: true,
+        batch: { select: { batchNumber: true, receivedDate: true } },
+      },
+      orderBy: [{ distributionOrderId: "asc" }, { id: "asc" }],
+    }),
+    prisma.distributionOrder.findMany({
+      where: { id: { in: sourceOrderIds } },
+      select: { id: true, receipt: { select: { receivedAt: true } } },
+    }),
+  ]);
 
   const sourcesByOrder = new Map();
   for (const allocation of allocations) {
@@ -208,12 +214,17 @@ async function getMyBranchFlowerDetail(branchId, flowerIdValue) {
     sourcesByOrder.set(allocation.distributionOrderId, sources);
   }
 
+  const receivedAtByOrder = new Map(
+    orders.map((order) => [order.id, order.receipt?.receivedAt || null])
+  );
+
   const { freshPeriod, gradeCPeriod } = await getAgePeriods();
   const now = Date.now();
   const detailLots = lots.map((lot) => ({
     id: lot.id,
     quantity: lot.quantity,
     shippedAt: lot.shippedAt,
+    receivedAt: receivedAtByOrder.get(lot.sourceOrderId) || lot.shippedAt,
     ageDays: Math.max(0, Math.floor((now - new Date(lot.shippedAt).getTime()) / (1000 * 60 * 60 * 24))),
     flowerStatus: calculateFlowerStatus(lot.shippedAt, freshPeriod, gradeCPeriod),
     sourceBatches: sourcesByOrder.get(lot.sourceOrderId) || [],
