@@ -45,7 +45,7 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
     ]);
   }
   const branchFilter = branchId ? { branchId } : {};
-  const [sales, receivings, movements, openingMovements, totalBranches, totalFarms] = await Promise.all([
+  const [sales, receivings, movements, openingMovements, totalBranches, totalFarms, flowersInTransit] = await Promise.all([
     prisma.dailySale.findMany({
       where: { salesDate: { gte: dateFrom, lt: dateTo }, ...branchFilter },
       select: { id: true, salesDate: true, branch: { select: { name: true } }, _count: { select: { items: true } } },
@@ -67,6 +67,7 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
     }),
     prisma.branch.count(),
     prisma.farm.count(),
+    prisma.distributionOrder.count({ where: { ...branchFilter, status: "IN_TRANSIT" } }),
   ]);
 
   const headOfficeAdded = sumMovement(movements, (movement) => movement.locationType === "HO" && movement.type === "RECEIVING_IN");
@@ -114,6 +115,7 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
       stockRemoved: headOfficeRemoved + branchRemoved,
       totalSales: sales.length,
       totalReceivings: receivings.length,
+      flowersInTransit,
     },
     flowerStatus: ["FRESH", "GRADE_C", "DAMAGED"].map((key) => ({
       key,
