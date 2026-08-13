@@ -25,3 +25,20 @@ test("triggers forecast generation and returns persisted identifiers", async () 
     data: { forecastRunId: 11, distributionPlanId: 22 },
   });
 });
+
+test("passes receivingId to forecast service", async () => {
+  forecastService.generateForecast.mockResolvedValue({ forecastRunId: 11, distributionPlanId: 22 });
+  const response = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+
+  await generateForecast(
+    { body: { forecastDate: "2025-06-30", modelVersion: "hgb-v1", receivingId: 123 } },
+    response,
+    jest.fn()
+  );
+
+  expect(forecastService.generateForecast).toHaveBeenCalledWith({
+    forecastDate: "2025-06-30",
+    modelVersion: "hgb-v1",
+    receivingId: 123,
+  });
+});

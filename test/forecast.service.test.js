@@ -1,5 +1,6 @@
 const {
   buildBaselineResults,
+  buildForcedAllocations,
   getEligiblePairs,
   generateForecast,
 } = require("../src/services/forecast.service");
@@ -24,6 +25,72 @@ function forecastResponse() {
     })),
   };
 }
+
+test("builds forced allocations from accepted receiving quantity using recommendation weights", () => {
+  const allocations = buildForcedAllocations(
+    { items: [{ flowerId: 2, acceptedQuantity: "120.00" }] },
+    [
+      { branchId: 1, flowerId: 2, recommendedQuantity: "12.00" },
+      { branchId: 2, flowerId: 2, recommendedQuantity: "18.00" },
+      { branchId: 3, flowerId: 2, recommendedQuantity: "30.00" },
+    ],
+    [
+      { branchId: 1, flowerId: 2, forecastDemand: "0.00" },
+      { branchId: 2, flowerId: 2, forecastDemand: "0.00" },
+      { branchId: 3, flowerId: 2, forecastDemand: "0.00" },
+    ],
+    [{ id: 1 }, { id: 2 }, { id: 3 }]
+  );
+
+  expect(Object.fromEntries(allocations)).toEqual({
+    "1:2": "24.00",
+    "2:2": "36.00",
+    "3:2": "60.00",
+  });
+});
+
+test("falls back to forecast demand when recommendation weights are zero", () => {
+  const allocations = buildForcedAllocations(
+    { items: [{ flowerId: 2, acceptedQuantity: "60.00" }] },
+    [
+      { branchId: 1, flowerId: 2, recommendedQuantity: "0.00" },
+      { branchId: 2, flowerId: 2, recommendedQuantity: "0.00" },
+    ],
+    [
+      { branchId: 1, flowerId: 2, forecastDemand: "10.00" },
+      { branchId: 2, flowerId: 2, forecastDemand: "20.00" },
+    ],
+    [{ id: 1 }, { id: 2 }]
+  );
+
+  expect(Object.fromEntries(allocations)).toEqual({
+    "1:2": "20.00",
+    "2:2": "40.00",
+  });
+});
+
+test("splits equally with integer largest-remainder rounding when recommendation and demand are zero", () => {
+  const allocations = buildForcedAllocations(
+    { items: [{ flowerId: 2, acceptedQuantity: "10.00" }] },
+    [
+      { branchId: 1, flowerId: 2, recommendedQuantity: "0.00" },
+      { branchId: 2, flowerId: 2, recommendedQuantity: "0.00" },
+      { branchId: 3, flowerId: 2, recommendedQuantity: "0.00" },
+    ],
+    [
+      { branchId: 1, flowerId: 2, forecastDemand: "0.00" },
+      { branchId: 2, flowerId: 2, forecastDemand: "0.00" },
+      { branchId: 3, flowerId: 2, forecastDemand: "0.00" },
+    ],
+    [{ id: 1 }, { id: 2 }, { id: 3 }]
+  );
+
+  expect(Object.fromEntries(allocations)).toEqual({
+    "1:2": "4.00",
+    "2:2": "3.00",
+    "3:2": "3.00",
+  });
+});
 
 test("persists forecasts and creates a capped D+1 draft plan in one transaction", async () => {
   const tx = {
@@ -171,6 +238,178 @@ test("reuses an existing distribution plan for the same planning date", async ()
   expect(forecastClient).not.toHaveBeenCalled();
   expect(responseValidator).not.toHaveBeenCalled();
   expect(prismaClient.$transaction).not.toHaveBeenCalled();
+});
+
+test("rejects existing distribution plan for planning date when receivingId is provided", async () => {
+  const prismaClient = {
+    dailySale: {
+      findMany: jest.fn().mockResolvedValue([{ salesDate: "2025-06-30" }]),
+    },
+    distributionPlan: {
+      findFirst: jest.fn().mockResolvedValue({ id: 77 }),
+    },
+    $transaction: jest.fn(),
+  };
+
+  await expect(
+    generateForecast(
+      { forecastDate: "2025-06-30", modelVersion: "hgb-v1", receivingId: 123 },
+      { prismaClient, forecastClient: jest.fn(), responseValidator: jest.fn() }
+    )
+  ).rejects.toMatchObject({
+    statusCode: 409,
+    message: "Distribution plan already exists for this planning date",
+  });
+
+  expect(prismaClient.$transaction).not.toHaveBeenCalled();
+});
+
+test("rejects invalid receivingId before opening the write transaction", async () => {
+  const prismaClient = {
+    dailySale: {
+      findMany: jest.fn().mockResolvedValue([{ salesDate: "2025-06-30" }]),
+    },
+    $transaction: jest.fn(),
+  };
+
+  await expect(
+    generateForecast(
+      { forecastDate: "2025-06-30", receivingId: "abc" },
+      { prismaClient, forecastClient: jest.fn(), responseValidator: jest.fn() }
+    )
+  ).rejects.toMatchObject({ statusCode: 422 });
+
+  expect(prismaClient.$transaction).not.toHaveBeenCalled();
+});
+
+test("rejects unknown receivingId before opening the write transaction", async () => {
+  const prismaClient = {
+    dailySale: {
+      findMany: jest.fn().mockResolvedValue([{ salesDate: "2025-06-30" }]),
+    },
+    distributionPlan: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
+    receiving: {
+      findUnique: jest.fn().mockResolvedValue(null),
+    },
+    $transaction: jest.fn(),
+  };
+
+  await expect(
+    generateForecast(
+      { forecastDate: "2025-06-30", receivingId: 123 },
+      { prismaClient, forecastClient: jest.fn(), responseValidator: jest.fn() }
+    )
+  ).rejects.toMatchObject({ statusCode: 404 });
+
+  expect(prismaClient.receiving.findUnique).toHaveBeenCalledWith({
+    where: { id: 123 },
+    select: expect.any(Object),
+  });
+  expect(prismaClient.$transaction).not.toHaveBeenCalled();
+});
+
+test("persists forced finalQuantity from receiving accepted quantity", async () => {
+  const tx = {
+    forecastRun: { create: jest.fn().mockResolvedValue({ id: 11 }) },
+    forecastResult: { createMany: jest.fn().mockResolvedValue({ count: 6 }) },
+    distributionPlan: { create: jest.fn().mockResolvedValue({ id: 22 }) },
+  };
+  const prismaClient = {
+    dailySale: {
+      findMany: jest.fn().mockResolvedValue([
+        {
+          branchId: 1,
+          salesDate: "2025-06-29",
+          items: [{ flowerId: 2, soldQuantity: "10.00", damagedQuantity: "0.00" }],
+        },
+        {
+          branchId: 1,
+          salesDate: "2025-06-30",
+          items: [{ flowerId: 2, soldQuantity: "10.00", damagedQuantity: "0.00" }],
+        },
+        {
+          branchId: 2,
+          salesDate: "2025-06-29",
+          items: [{ flowerId: 2, soldQuantity: "10.00", damagedQuantity: "0.00" }],
+        },
+        {
+          branchId: 2,
+          salesDate: "2025-06-30",
+          items: [{ flowerId: 2, soldQuantity: "10.00", damagedQuantity: "0.00" }],
+        },
+      ]),
+    },
+    distributionPlan: { findFirst: jest.fn().mockResolvedValue(null) },
+    receiving: {
+      findUnique: jest.fn().mockResolvedValue({
+        id: 123,
+        status: "COMPLETED",
+        items: [{ flowerId: 2, acceptedQuantity: "30.00" }],
+      }),
+    },
+    branch: { findMany: jest.fn().mockResolvedValue([{ id: 1, name: "A" }, { id: 2, name: "B" }]) },
+    flower: { findMany: jest.fn().mockResolvedValue([{ id: 2, name: "Rose", variety: "Red" }]) },
+    systemConfiguration: {
+      findUnique: jest.fn(({ where }) => Promise.resolve({ value: where.key === "AI_MINIMUM_HISTORY" ? "2" : "0" })),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    branchStockLot: { findMany: jest.fn().mockResolvedValue([]) },
+    distributionBatchAllocation: { findMany: jest.fn().mockResolvedValue([]) },
+    flowerBatch: { groupBy: jest.fn().mockResolvedValue([{ flowerId: 2, _sum: { availableQuantity: "999.00" } }]) },
+    $transaction: jest.fn(async (callback) => callback(tx)),
+  };
+  const forecastClient = jest.fn().mockResolvedValue({
+    cutoffDate: "2025-06-30",
+    forecastMethod: "ML",
+    modelVersion: "hgb-v1",
+    results: [
+      {
+        branchId: 1,
+        branchName: "A",
+        flowerId: 2,
+        flowerName: "Rose",
+        forecastDate: "2025-07-01",
+        horizon: 1,
+        forecastDemand: 10,
+        forecastMethod: "ML",
+        modelVersion: "hgb-v1",
+        generatedAt: "2025-06-30T12:00:00+00:00",
+      },
+      {
+        branchId: 2,
+        branchName: "B",
+        flowerId: 2,
+        flowerName: "Rose",
+        forecastDate: "2025-07-01",
+        horizon: 1,
+        forecastDemand: 20,
+        forecastMethod: "ML",
+        modelVersion: "hgb-v1",
+        generatedAt: "2025-06-30T12:00:00+00:00",
+      },
+    ],
+  });
+
+  await expect(
+    generateForecast(
+      { forecastDate: "2025-06-30", modelVersion: "hgb-v1", receivingId: 123 },
+      { prismaClient, forecastClient, responseValidator: (response) => response }
+    )
+  ).resolves.toEqual({ forecastRunId: 11, distributionPlanId: 22 });
+
+  expect(tx.distributionPlan.create).toHaveBeenCalledWith({
+    data: expect.objectContaining({
+      items: {
+        create: [
+          { branchId: 1, flowerId: 2, recommendedQuantity: "10.00", finalQuantity: "10.00" },
+          { branchId: 2, flowerId: 2, recommendedQuantity: "20.00", finalQuantity: "20.00" },
+        ],
+      },
+    }),
+    select: { id: true },
+  });
 });
 
 test("falls back to baseline when the forecast service returns HTTP 500", async () => {

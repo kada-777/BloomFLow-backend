@@ -5,6 +5,7 @@ async function generateForecast(req, res, next) {
     const data = await forecastService.generateForecast({
       forecastDate: req.body?.forecastDate,
       modelVersion: req.body?.modelVersion,
+      receivingId: req.body?.receivingId,
     });
     res.status(201).json({ success: true, data });
   } catch (error) {

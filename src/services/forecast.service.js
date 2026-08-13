@@ -1,4 +1,5 @@
 const { minorUnitsToString, toMinorUnits } = require("../utils/branch-stock");
+const { HttpError } = require("../utils/http-error");
 const {
   calculateFlowerStatus,
   DEFAULT_FRESH_PERIOD,
@@ -9,6 +10,27 @@ const { validateForecastResponse } = require("./forecast-validation.service");
 
 function addQuantity(map, key, value) {
   map.set(key, (map.get(key) ?? 0n) + toMinorUnits(value ?? "0"));
+}
+
+function validationError(errors) {
+  throw new HttpError(422, "Validation failed", errors);
+}
+
+function parseOptionalReceivingId(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const id = Number(value);
+  if (!Number.isInteger(id) || id < 1) {
+    validationError([{ field: "receivingId", message: "receivingId must be a positive integer" }]);
+  }
+  return id;
+}
+
+function toWholeUnits(value) {
+  return toMinorUnits(value) / 100n;
+}
+
+function wholeUnitsToString(value) {
+  return minorUnitsToString(value * 100n);
 }
 
 function getEligiblePairs(historyByPair, minimumHistory) {
@@ -189,6 +211,108 @@ function buildRecommendations(results, branchLots, inTransit, headOfficeStock, s
   }));
 }
 
+function allocateIntegerByWeight(totalUnits, weightedBranches) {
+  if (totalUnits <= 0n || !weightedBranches.length) return new Map();
+
+  const totalWeight = weightedBranches.reduce((sum, entry) => sum + entry.weight, 0n);
+  const allocations = [];
+  let allocated = 0n;
+
+  for (const entry of weightedBranches) {
+    const numerator = totalUnits * entry.weight;
+    const quantity = numerator / totalWeight;
+    const remainder = numerator % totalWeight;
+    allocations.push({ ...entry, quantity, remainder });
+    allocated += quantity;
+  }
+
+  let remaining = totalUnits - allocated;
+  allocations.sort((left, right) => {
+    if (left.remainder !== right.remainder) return left.remainder > right.remainder ? -1 : 1;
+    return left.branchId - right.branchId;
+  });
+
+  for (const allocation of allocations) {
+    if (remaining <= 0n) break;
+    allocation.quantity += 1n;
+    remaining -= 1n;
+  }
+
+  return new Map(
+    allocations.map((allocation) => [
+      `${allocation.branchId}:${allocation.flowerId}`,
+      wholeUnitsToString(allocation.quantity),
+    ])
+  );
+}
+
+function buildForcedAllocations(receiving, recommendations, dPlusOneResults, branches) {
+  if (!receiving) return new Map();
+
+  const allocations = new Map();
+  const branchIds = branches.map((branch) => branch.id).sort((left, right) => left - right);
+
+  for (const item of receiving.items) {
+    const totalReceived = toWholeUnits(item.acceptedQuantity);
+    if (totalReceived <= 0n || !branchIds.length) continue;
+
+    let weights = branchIds.map((branchId) => {
+      const recommendation = recommendations.find(
+        (entry) => entry.branchId === branchId && entry.flowerId === item.flowerId
+      );
+      return {
+        branchId,
+        flowerId: item.flowerId,
+        weight: toMinorUnits(recommendation?.recommendedQuantity ?? "0"),
+      };
+    });
+
+    const totalRecommended = weights.reduce((sum, entry) => sum + entry.weight, 0n);
+    if (totalRecommended === 0n) {
+      weights = branchIds.map((branchId) => {
+        const forecast = dPlusOneResults.find(
+          (entry) => entry.branchId === branchId && entry.flowerId === item.flowerId
+        );
+        return {
+          branchId,
+          flowerId: item.flowerId,
+          weight: toMinorUnits(forecast?.forecastDemand ?? "0"),
+        };
+      });
+    }
+
+    const totalWeight = weights.reduce((sum, entry) => sum + entry.weight, 0n);
+    if (totalWeight === 0n) {
+      weights = branchIds.map((branchId) => ({ branchId, flowerId: item.flowerId, weight: 1n }));
+    }
+
+    for (const [key, quantity] of allocateIntegerByWeight(totalReceived, weights)) {
+      allocations.set(key, quantity);
+    }
+  }
+
+  return allocations;
+}
+
+async function loadReceivingForAllocation(prismaClient, receivingId) {
+  if (!receivingId) return null;
+
+  const receiving = await prismaClient.receiving.findUnique({
+    where: { id: receivingId },
+    select: {
+      id: true,
+      status: true,
+      items: { select: { flowerId: true, acceptedQuantity: true } },
+    },
+  });
+  if (!receiving) throw new HttpError(404, "Receiving not found");
+  if (receiving.status !== "COMPLETED") {
+    throw new HttpError(409, "Only COMPLETED receiving can be allocated");
+  }
+
+  return receiving;
+}
+
 async function loadInventorySnapshot(tx) {
   const [branchLots, inTransit, groupedHeadOfficeStock, configuration, ageConfigurations] = await Promise.all([
     tx.branchStockLot.findMany({
@@ -246,6 +370,7 @@ function getDefaultDependencies() {
 }
 
 async function generateForecast(options = {}, dependencies = getDefaultDependencies()) {
+  const receivingId = parseOptionalReceivingId(options.receivingId);
   const preliminarySales = await dependencies.prismaClient.dailySale.findMany({
     select: { salesDate: true },
   });
@@ -261,8 +386,13 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
     orderBy: { id: "asc" },
   });
   if (existingPlan) {
+    if (receivingId) {
+      throw new HttpError(409, "Distribution plan already exists for this planning date");
+    }
     return { distributionPlanId: existingPlan.id, reused: true };
   }
+
+  const receiving = await loadReceivingForAllocation(dependencies.prismaClient, receivingId);
 
   const forecastHistory = await loadForecastHistory(dependencies.prismaClient, cutoffDate);
   const request = { forecastDate: cutoffDate, eligiblePairs: forecastHistory.eligiblePairs };
@@ -305,6 +435,12 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
     snapshot.headOfficeStock,
     snapshot.safetyStock
   );
+  const forcedAllocations = buildForcedAllocations(
+    receiving,
+    recommendations,
+    dPlusOneResults,
+    forecastHistory.branches
+  );
 
   const persisted = await dependencies.prismaClient.$transaction(async (tx) => {
     const forecastRun = await tx.forecastRun.create({
@@ -334,11 +470,15 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
         planningDate,
         status: "DRAFT",
         items: {
-          create: recommendations.map((recommendation) => ({
-            branchId: recommendation.branchId,
-            flowerId: recommendation.flowerId,
-            recommendedQuantity: recommendation.recommendedQuantity,
-          })),
+          create: recommendations.map((recommendation) => {
+            const key = `${recommendation.branchId}:${recommendation.flowerId}`;
+            return {
+              branchId: recommendation.branchId,
+              flowerId: recommendation.flowerId,
+              recommendedQuantity: recommendation.recommendedQuantity,
+              ...(receiving ? { finalQuantity: forcedAllocations.get(key) ?? "0.00" } : {}),
+            };
+          }),
         },
       },
       select: { id: true },
@@ -352,6 +492,7 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
 
 module.exports = {
   buildBaselineResults,
+  buildForcedAllocations,
   buildRecommendations,
   generateForecast,
   getEligiblePairs,
