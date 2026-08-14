@@ -7,10 +7,12 @@ jest.mock("../src/lib/prisma", () => ({
   farm: { count: jest.fn() },
   dailySaleItem: { findMany: jest.fn() },
   receivingItem: { aggregate: jest.fn() },
+  branchStockLot: { findMany: jest.fn() },
+  systemConfiguration: { findMany: jest.fn() },
 }));
 
 const prisma = require("../src/lib/prisma");
-const { getHeadOfficeDashboard } = require("../src/services/dashboard.service");
+const { getBranchDashboard, getHeadOfficeDashboard } = require("../src/services/dashboard.service");
 
 test("includes in-transit orders for the selected branch", async () => {
   prisma.dailySale.findMany.mockResolvedValue([]);
@@ -27,6 +29,29 @@ test("includes in-transit orders for the selected branch", async () => {
   expect(prisma.distributionOrder.count).toHaveBeenCalledWith({
     where: { branchId: 4, status: "IN_TRANSIT" },
   });
+});
+
+test("excludes damaged branch lots from currently stock", async () => {
+  prisma.dailySale.findMany.mockResolvedValue([]);
+  prisma.receiving.findMany.mockResolvedValue([]);
+  prisma.inventoryMovement.findMany.mockResolvedValue([]);
+  prisma.branchStockLot.findMany.mockResolvedValue([
+    { quantity: 40, shippedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) },
+    { quantity: 30, shippedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) },
+    { quantity: 20, shippedAt: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000) },
+  ]);
+  prisma.systemConfiguration.findMany.mockResolvedValue([
+    { key: "FRESH_PERIOD", value: "7" },
+    { key: "GRADE_C_PERIOD", value: "4" },
+  ]);
+  prisma.branch.count.mockResolvedValue(0);
+  prisma.farm.count.mockResolvedValue(0);
+  prisma.dailySaleItem.findMany.mockResolvedValue([]);
+  prisma.distributionOrder.count.mockResolvedValue(0);
+
+  const dashboard = await getBranchDashboard(7, "1", "10", 4);
+
+  expect(dashboard.summary.totalBranchStock).toBe(70);
 });
 
 test("returns period stock activity separately from current stock", async () => {

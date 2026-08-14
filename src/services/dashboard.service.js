@@ -1,6 +1,7 @@
 const prisma = require("../lib/prisma");
 const { HttpError } = require("../utils/http-error");
 const { buildPagination, parsePagination } = require("../utils/pagination");
+const { calculateFlowerStatus, getAgePeriods } = require("../utils/flower-status");
 
 const VALID_RANGES = new Set([1, 7, 30, 60]);
 const ADDITION_TYPES = new Set(["RECEIVING_IN", "DISTRIBUTION_IN"]);
@@ -46,7 +47,7 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
   }
   const branchFilter = branchId ? { branchId } : {};
   const isBranchDashboard = options.scope === "branch";
-  const [sales, receivings, movements, openingMovements, totalBranches, totalFarms, flowersInTransit, damagedReceiving] = await Promise.all([
+  const [sales, receivings, movements, openingMovements, branchStockLots, totalBranches, totalFarms, flowersInTransit, damagedReceiving] = await Promise.all([
     prisma.dailySale.findMany({
       where: { salesDate: { gte: dateFrom, lt: dateTo }, ...branchFilter },
       select: { id: true, salesDate: true, branch: { select: { name: true } }, _count: { select: { items: true } } },
@@ -66,6 +67,12 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
       where: { createdAt: { lt: dateFrom }, ...branchFilter },
       select: { type: true, quantity: true, locationType: true },
     }),
+    isBranchDashboard
+      ? prisma.branchStockLot.findMany({
+        where: { branchId, quantity: { not: "0" } },
+        select: { quantity: true, shippedAt: true },
+      })
+      : Promise.resolve([]),
     isBranchDashboard ? Promise.resolve(0) : prisma.branch.count(),
     isBranchDashboard ? Promise.resolve(0) : prisma.farm.count(),
     prisma.distributionOrder.count({ where: { ...branchFilter, status: "IN_TRANSIT" } }),
@@ -85,6 +92,13 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
     - sumMovement(openingMovements, (movement) => movement.locationType === "HO" && REMOVAL_TYPES.has(movement.type));
   const branchOpening = sumMovement(openingMovements, (movement) => movement.locationType === "BRANCH" && ADDITION_TYPES.has(movement.type))
     - sumMovement(openingMovements, (movement) => movement.locationType === "BRANCH" && REMOVAL_TYPES.has(movement.type));
+  let currentBranchStock = branchOpening + branchAdded - branchRemoved;
+  if (isBranchDashboard) {
+    const { freshPeriod, gradeCPeriod } = await getAgePeriods();
+    currentBranchStock = branchStockLots
+      .filter((lot) => ["FRESH", "GRADE_C"].includes(calculateFlowerStatus(lot.shippedAt, freshPeriod, gradeCPeriod)))
+      .reduce((total, lot) => total + number(lot.quantity), 0);
+  }
 
   const statusTotals = new Map([["FRESH", 0], ["GRADE_C", 0], ["DAMAGED", 0]]);
   movements.forEach((movement) => {
@@ -122,7 +136,7 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
       totalBranches,
       totalFarms,
       headOfficeStock: headOfficeOpening + headOfficeAdded - headOfficeRemoved,
-      totalBranchStock: branchOpening + branchAdded - branchRemoved,
+      totalBranchStock: currentBranchStock,
       headOfficeStockAdded: headOfficeAdded,
       headOfficeStockRemoved: headOfficeRemoved,
       headOfficeNetStockActivity: headOfficeAdded - headOfficeRemoved,
