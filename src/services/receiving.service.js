@@ -138,7 +138,17 @@ const detailSelect = {
   },
 };
 
-async function list(pagination) {
+function parseReceivedDateFilter(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (!isValidDate(value)) {
+    validationError([{ field: "receivedDate", message: "receivedDate must use YYYY-MM-DD" }]);
+  }
+  return new Date(`${value}T00:00:00.000Z`);
+}
+
+async function list(pagination, filters = {}, dependencies = { prismaClient: prisma }) {
+  const receivedDate = parseReceivedDateFilter(filters.receivedDate);
+  const where = receivedDate ? { receivedDate } : {};
   const select = {
     id: true,
     farmId: true,
@@ -148,14 +158,15 @@ async function list(pagination) {
     _count: { select: { items: true, batches: true } },
   };
   const orderBy = [{ receivedDate: "desc" }, { id: "desc" }];
-  const [data, totalItems] = await prisma.$transaction([
-    prisma.receiving.findMany({
+  const [data, totalItems] = await dependencies.prismaClient.$transaction([
+    dependencies.prismaClient.receiving.findMany({
+      where,
       select,
       orderBy,
       skip: pagination.skip,
       take: pagination.take,
     }),
-    prisma.receiving.count(),
+    dependencies.prismaClient.receiving.count({ where }),
   ]);
 
   return { data, pagination: buildPagination(pagination.page, pagination.limit, totalItems) };

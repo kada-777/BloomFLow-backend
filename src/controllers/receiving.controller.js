@@ -2,7 +2,10 @@ const receivingService = require("../services/receiving.service");
 const { parsePagination } = require("../utils/pagination");
 
 async function listReceivings(req, res) {
-  const result = await receivingService.list(parsePagination(req.query));
+  const result = await receivingService.list(
+    parsePagination(req.query),
+    { receivedDate: req.query.receivedDate },
+  );
   res.json({ success: true, ...result });
 }
 
