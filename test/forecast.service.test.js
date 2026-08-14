@@ -146,6 +146,13 @@ test("persists forecasts and creates a capped D+1 draft plan in one transaction"
         },
       ]),
     },
+    receiving: {
+      findFirst: jest.fn().mockResolvedValue({ receivedDate: new Date("2025-07-02T00:00:00.000Z") }),
+      findMany: jest.fn().mockResolvedValue([
+        { items: [{ flowerId: 2, acceptedQuantity: "10.00" }, { flowerId: 3, acceptedQuantity: "0.00" }] },
+        { items: [{ flowerId: 2, acceptedQuantity: "7.00" }, { flowerId: 4, acceptedQuantity: "5.00" }] },
+      ]),
+    },
   };
   const prismaClient = {
     ...tx,
@@ -160,6 +167,20 @@ test("persists forecasts and creates a capped D+1 draft plan in one transaction"
   );
 
   expect(result).toEqual({ forecastRunId: 11, distributionPlanId: 22 });
+  expect(prismaClient.receiving.findFirst).toHaveBeenCalledWith({
+    where: { status: "COMPLETED" },
+    select: { receivedDate: true },
+    orderBy: [{ receivedDate: "desc" }, { id: "desc" }],
+  });
+  expect(prismaClient.receiving.findMany).toHaveBeenCalledWith({
+    where: {
+      status: "COMPLETED",
+      receivedDate: new Date("2025-07-02T00:00:00.000Z"),
+    },
+    select: {
+      items: { select: { flowerId: true, acceptedQuantity: true } },
+    },
+  });
   expect(forecastClient).toHaveBeenCalledWith({
     forecastDate: "2025-06-30",
     eligiblePairs: [{ branchId: 1, flowerId: 2 }],
@@ -197,11 +218,13 @@ test("persists forecasts and creates a capped D+1 draft plan in one transaction"
             branchId: 1,
             flowerId: 2,
             recommendedQuantity: "4.00",
+            finalQuantity: "17.00",
           },
           {
             branchId: 2,
             flowerId: 2,
             recommendedQuantity: "0.00",
+            finalQuantity: "0.00",
           },
         ],
       },
@@ -237,6 +260,40 @@ test("reuses an existing distribution plan for the same planning date", async ()
   });
   expect(forecastClient).not.toHaveBeenCalled();
   expect(responseValidator).not.toHaveBeenCalled();
+  expect(prismaClient.$transaction).not.toHaveBeenCalled();
+});
+
+test("rejects automatic generation when no completed receiving exists", async () => {
+  const prismaClient = {
+    dailySale: {
+      findMany: jest.fn().mockResolvedValue([{ salesDate: "2025-06-30" }]),
+    },
+    distributionPlan: {
+      findFirst: jest.fn().mockResolvedValue(null),
+      create: jest.fn(),
+    },
+    receiving: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
+    $transaction: jest.fn(),
+  };
+
+  await expect(
+    generateForecast(
+      { forecastDate: "2025-06-30", modelVersion: "hgb-v1" },
+      { prismaClient, forecastClient: jest.fn(), responseValidator: jest.fn() }
+    )
+  ).rejects.toMatchObject({
+    statusCode: 409,
+    message: "A completed receiving is required before generating a distribution plan",
+  });
+
+  expect(prismaClient.receiving.findFirst).toHaveBeenCalledWith({
+    where: { status: "COMPLETED" },
+    select: { receivedDate: true },
+    orderBy: [{ receivedDate: "desc" }, { id: "desc" }],
+  });
+  expect(prismaClient.distributionPlan.create).not.toHaveBeenCalled();
   expect(prismaClient.$transaction).not.toHaveBeenCalled();
 });
 
@@ -460,6 +517,10 @@ test("falls back to baseline when the forecast service returns HTTP 500", async 
         },
       ]),
     },
+    receiving: {
+      findFirst: jest.fn().mockResolvedValue({ receivedDate: new Date("2025-07-02T00:00:00.000Z") }),
+      findMany: jest.fn().mockResolvedValue([{ items: [{ flowerId: 2, acceptedQuantity: "20.00" }] }]),
+    },
   };
   const prismaClient = {
     ...tx,
@@ -573,6 +634,10 @@ test("keeps forecast service and inventory reads outside the write transaction",
     },
     distributionPlan: {
       findFirst: jest.fn(async () => null),
+    },
+    receiving: {
+      findFirst: jest.fn().mockResolvedValue({ receivedDate: new Date("2025-07-02T00:00:00.000Z") }),
+      findMany: jest.fn().mockResolvedValue([{ items: [{ flowerId: 2, acceptedQuantity: "20.00" }] }]),
     },
     $transaction: jest.fn(async (callback) => {
       calls.push("transaction:start");

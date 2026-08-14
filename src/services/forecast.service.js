@@ -12,6 +12,19 @@ function addQuantity(map, key, value) {
   map.set(key, (map.get(key) ?? 0n) + toMinorUnits(value ?? "0"));
 }
 
+function aggregateReceivingItems(receivings) {
+  const quantities = new Map();
+  for (const receiving of receivings) {
+    for (const item of receiving.items ?? []) {
+      addQuantity(quantities, item.flowerId, item.acceptedQuantity);
+    }
+  }
+  return [...quantities.entries()].map(([flowerId, quantity]) => ({
+    flowerId,
+    acceptedQuantity: minorUnitsToString(quantity),
+  }));
+}
+
 function validationError(errors) {
   throw new HttpError(422, "Validation failed", errors);
 }
@@ -295,7 +308,32 @@ function buildForcedAllocations(receiving, recommendations, dPlusOneResults, bra
 }
 
 async function loadReceivingForAllocation(prismaClient, receivingId) {
-  if (!receivingId) return null;
+  if (!receivingId) {
+    const latest = await prismaClient.receiving.findFirst({
+      where: { status: "COMPLETED" },
+      select: { receivedDate: true },
+      orderBy: [{ receivedDate: "desc" }, { id: "desc" }],
+    });
+    if (!latest) {
+      throw new HttpError(
+        409,
+        "A completed receiving is required before generating a distribution plan",
+      );
+    }
+
+    const receivings = await prismaClient.receiving.findMany({
+      where: { status: "COMPLETED", receivedDate: latest.receivedDate },
+      select: {
+        items: { select: { flowerId: true, acceptedQuantity: true } },
+      },
+    });
+
+    return {
+      id: null,
+      status: "COMPLETED",
+      items: aggregateReceivingItems(receivings),
+    };
+  }
 
   const receiving = await prismaClient.receiving.findUnique({
     where: { id: receivingId },
@@ -435,9 +473,17 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
     snapshot.headOfficeStock,
     snapshot.safetyStock
   );
+  const receivedFlowerIds = new Set(
+    receiving.items
+      .filter((item) => toWholeUnits(item.acceptedQuantity) > 0n)
+      .map((item) => item.flowerId)
+  );
+  const scopedRecommendations = recommendations.filter((recommendation) =>
+    receivedFlowerIds.has(recommendation.flowerId)
+  );
   const forcedAllocations = buildForcedAllocations(
     receiving,
-    recommendations,
+    scopedRecommendations,
     dPlusOneResults,
     forecastHistory.branches
   );
@@ -470,7 +516,7 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
         planningDate,
         status: "DRAFT",
         items: {
-          create: recommendations.map((recommendation) => {
+          create: scopedRecommendations.map((recommendation) => {
             const key = `${recommendation.branchId}:${recommendation.flowerId}`;
             return {
               branchId: recommendation.branchId,
