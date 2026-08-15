@@ -7,7 +7,11 @@ const {
 } = require("../utils/flower-status");
 const { requestForecast } = require("./forecast-client");
 const { validateForecastResponse } = require("./forecast-validation.service");
-const { getPlanningMetadata } = require("./planning-date.service");
+const {
+  getPlanningMetadata,
+  jakartaDate,
+  validatePlanningDate,
+} = require("./planning-date.service");
 
 function addQuantity(map, key, value) {
   map.set(key, (map.get(key) ?? 0n) + toMinorUnits(value ?? "0"));
@@ -260,7 +264,7 @@ function allocateIntegerByWeight(totalUnits, weightedBranches) {
   );
 }
 
-function buildForcedAllocations(receiving, recommendations, dPlusOneResults, branches) {
+function buildForcedAllocations(receiving, recommendations, selectedResults, branches) {
   if (!receiving) return new Map();
 
   const allocations = new Map();
@@ -284,7 +288,7 @@ function buildForcedAllocations(receiving, recommendations, dPlusOneResults, bra
     const totalRecommended = weights.reduce((sum, entry) => sum + entry.weight, 0n);
     if (totalRecommended === 0n) {
       weights = branchIds.map((branchId) => {
-        const forecast = dPlusOneResults.find(
+        const forecast = selectedResults.find(
           (entry) => entry.branchId === branchId && entry.flowerId === item.flowerId
         );
         return {
@@ -409,28 +413,31 @@ function getDefaultDependencies() {
 }
 
 async function generateForecast(options = {}, dependencies = getDefaultDependencies()) {
-  const receivingId = parseOptionalReceivingId(options.receivingId);
   const preliminarySales = await dependencies.prismaClient.dailySale.findMany({
     select: { salesDate: true },
   });
-  if (!preliminarySales.length && !options.forecastDate) {
+  if (!preliminarySales.length) {
     throw new Error("Daily sales history is required to generate a forecast");
   }
-  const cutoffDate = options.forecastDate
-    ?? preliminarySales.map((sale) => dateText(sale.salesDate)).sort().at(-1);
-  const planningDate = nextPlanningDate(cutoffDate);
+  const cutoffDate = preliminarySales.map((sale) => dateText(sale.salesDate)).sort().at(-1);
+  const {
+    horizon: selectedHorizon,
+    planningDateValue,
+  } = validatePlanningDate({
+    planningDate: options.planningDate,
+    cutoffDate,
+    serverDate: jakartaDate(dependencies.now ? dependencies.now() : new Date()),
+  });
   const existingPlan = await dependencies.prismaClient.distributionPlan.findFirst({
-    where: { planningDate },
+    where: { planningDate: planningDateValue },
     select: { id: true },
     orderBy: { id: "asc" },
   });
   if (existingPlan) {
-    if (receivingId) {
-      throw new HttpError(409, "Distribution plan already exists for this planning date");
-    }
-    return { distributionPlanId: existingPlan.id, reused: true };
+    throw new HttpError(409, "Distribution plan already exists for this planning date");
   }
 
+  const receivingId = parseOptionalReceivingId(options.receivingId);
   const receiving = await loadReceivingForAllocation(dependencies.prismaClient, receivingId);
 
   const forecastHistory = await loadForecastHistory(dependencies.prismaClient, cutoffDate);
@@ -464,11 +471,11 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
   const modelVersion = forecastMethod === "MIXED"
     ? "mixed"
     : (mlResults.length ? mlModelVersion : "baseline-v1");
-  const dPlusOneResults = results.filter((result) => result.horizon === 1);
+  const selectedResults = results.filter((result) => result.horizon === selectedHorizon);
 
   const snapshot = await loadInventorySnapshot(dependencies.prismaClient);
   const recommendations = buildRecommendations(
-    dPlusOneResults,
+    selectedResults,
     snapshot.branchLots,
     snapshot.inTransit,
     snapshot.headOfficeStock,
@@ -485,54 +492,66 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
   const forcedAllocations = buildForcedAllocations(
     receiving,
     scopedRecommendations,
-    dPlusOneResults,
+    selectedResults,
     forecastHistory.branches
   );
 
-  const persisted = await dependencies.prismaClient.$transaction(async (tx) => {
-    const forecastRun = await tx.forecastRun.create({
-      data: {
-        executedAt: new Date(results[0].generatedAt),
-        modelVersion,
-        forecastMethod,
-        trainingDataUntil: new Date(`${cutoffDate}T00:00:00.000Z`),
-      },
-      select: { id: true },
-    });
-
-    await tx.forecastResult.createMany({
-      data: results.map((result) => ({
-        runId: forecastRun.id,
-        branchId: result.branchId,
-        flowerId: result.flowerId,
-        forecastDemand: result.forecastDemand,
-        forecastPeriod: result.forecastDate,
-        forecastMethod: result.forecastMethod,
-        modelVersion: result.modelVersion,
-      })),
-    });
-
-    const distributionPlan = await tx.distributionPlan.create({
-      data: {
-        planningDate,
-        status: "DRAFT",
-        items: {
-          create: scopedRecommendations.map((recommendation) => {
-            const key = `${recommendation.branchId}:${recommendation.flowerId}`;
-            return {
-              branchId: recommendation.branchId,
-              flowerId: recommendation.flowerId,
-              recommendedQuantity: recommendation.recommendedQuantity,
-              ...(receiving ? { finalQuantity: forcedAllocations.get(key) ?? "0.00" } : {}),
-            };
-          }),
+  let persisted;
+  try {
+    persisted = await dependencies.prismaClient.$transaction(async (tx) => {
+      const forecastRun = await tx.forecastRun.create({
+        data: {
+          executedAt: new Date(results[0].generatedAt),
+          modelVersion,
+          forecastMethod,
+          trainingDataUntil: new Date(`${cutoffDate}T00:00:00.000Z`),
         },
-      },
-      select: { id: true },
-    });
+        select: { id: true },
+      });
 
-    return { forecastRunId: forecastRun.id, distributionPlanId: distributionPlan.id };
-  });
+      await tx.forecastResult.createMany({
+        data: results.map((result) => ({
+          runId: forecastRun.id,
+          branchId: result.branchId,
+          flowerId: result.flowerId,
+          forecastDemand: result.forecastDemand,
+          forecastPeriod: result.forecastDate,
+          forecastMethod: result.forecastMethod,
+          modelVersion: result.modelVersion,
+        })),
+      });
+
+      const distributionPlan = await tx.distributionPlan.create({
+        data: {
+          planningDate: planningDateValue,
+          status: "DRAFT",
+          items: {
+            create: scopedRecommendations.map((recommendation) => {
+              const key = `${recommendation.branchId}:${recommendation.flowerId}`;
+              return {
+                branchId: recommendation.branchId,
+                flowerId: recommendation.flowerId,
+                recommendedQuantity: recommendation.recommendedQuantity,
+                ...(receiving ? { finalQuantity: forcedAllocations.get(key) ?? "0.00" } : {}),
+              };
+            }),
+          },
+        },
+        select: { id: true },
+      });
+
+      return { forecastRunId: forecastRun.id, distributionPlanId: distributionPlan.id };
+    });
+  } catch (error) {
+    if (
+      error?.code === "P2002"
+      && Array.isArray(error.meta?.target)
+      && error.meta.target.includes("planningDate")
+    ) {
+      throw new HttpError(409, "Distribution plan already exists for this planning date");
+    }
+    throw error;
+  }
 
   return persisted;
 }

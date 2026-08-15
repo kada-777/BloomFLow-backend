@@ -26,6 +26,224 @@ function forecastResponse() {
   };
 }
 
+function transactionFailureDependencies(error) {
+  const results = [1, 2, 3].map((horizon) => ({
+    branchId: 1,
+    branchName: "Central",
+    flowerId: 2,
+    flowerName: "Rose",
+    forecastDate: `2026-08-${12 + horizon}`,
+    horizon,
+    forecastDemand: 10,
+    forecastMethod: "ML",
+    modelVersion: "hgb-v1",
+    generatedAt: "2026-08-12T12:00:00.000Z",
+  }));
+  const prismaClient = {
+    dailySale: {
+      findMany: jest.fn().mockResolvedValue([{
+        branchId: 1,
+        salesDate: "2026-08-12",
+        items: [{ flowerId: 2, soldQuantity: "10.00", damagedQuantity: "0.00" }],
+      }]),
+    },
+    distributionPlan: { findFirst: jest.fn().mockResolvedValue(null) },
+    receiving: {
+      findUnique: jest.fn().mockResolvedValue({
+        id: 123,
+        status: "COMPLETED",
+        items: [{ flowerId: 2, acceptedQuantity: "10.00" }],
+      }),
+    },
+    branch: { findMany: jest.fn().mockResolvedValue([{ id: 1, name: "Central" }]) },
+    flower: { findMany: jest.fn().mockResolvedValue([{ id: 2, name: "Rose", variety: "Red" }]) },
+    systemConfiguration: {
+      findUnique: jest.fn(({ where }) => Promise.resolve({ value: where.key === "AI_MINIMUM_HISTORY" ? "1" : "0" })),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    branchStockLot: { findMany: jest.fn().mockResolvedValue([]) },
+    distributionBatchAllocation: { findMany: jest.fn().mockResolvedValue([]) },
+    flowerBatch: { groupBy: jest.fn().mockResolvedValue([{ flowerId: 2, _sum: { availableQuantity: "10.00" } }]) },
+    $transaction: jest.fn().mockRejectedValue(error),
+  };
+
+  return {
+    prismaClient,
+    forecastClient: jest.fn().mockResolvedValue({
+      cutoffDate: "2026-08-12",
+      forecastMethod: "ML",
+      modelVersion: "hgb-v1",
+      results,
+    }),
+    responseValidator: (response) => response,
+    now: () => new Date("2026-08-14T05:00:00.000Z"),
+  };
+}
+
+test.each([
+  [undefined, "planningDate must use YYYY-MM-DD"],
+  ["2026/08/15", "planningDate must use YYYY-MM-DD"],
+  ["2026-08-13", "planningDate cannot be before the server date"],
+  ["2026-08-11", "planningDate must be after the Daily Sales cutoff", "2026-08-10T05:00:00.000Z"],
+  ["2026-08-12", "planningDate must be after the Daily Sales cutoff", "2026-08-10T05:00:00.000Z"],
+  ["2026-08-16", "planningDate must be within forecast horizon 1-3"],
+])("rejects invalid generation planning date %p", async (planningDate, message, instant = "2026-08-14T05:00:00.000Z") => {
+  const prismaClient = {
+    dailySale: { findMany: jest.fn().mockResolvedValue([{ salesDate: "2026-08-12" }]) },
+    distributionPlan: { findFirst: jest.fn() },
+  };
+
+  await expect(generateForecast(
+    { planningDate },
+    {
+      prismaClient,
+      forecastClient: jest.fn(),
+      responseValidator: jest.fn(),
+      now: () => new Date(instant),
+    }
+  )).rejects.toMatchObject({
+    statusCode: 422,
+    message: "Validation failed",
+    errors: [{ field: "planningDate", message }],
+  });
+  expect(prismaClient.distributionPlan.findFirst).not.toHaveBeenCalled();
+});
+
+test("uses only the selected horizon for recommendations and fallback allocation weights", async () => {
+  const branches = [{ id: 1, name: "Central" }, { id: 2, name: "North" }];
+  const flowers = [
+    { id: 2, name: "Rose", variety: "Red" },
+    { id: 3, name: "Lily", variety: "White" },
+  ];
+  const demands = [
+    { branchId: 1, flowerId: 2, values: [1, 2, 11] },
+    { branchId: 2, flowerId: 2, values: [2, 3, 19] },
+    { branchId: 1, flowerId: 3, values: [30, 40, 10] },
+    { branchId: 2, flowerId: 3, values: [60, 50, 20] },
+  ];
+  const results = demands.flatMap(({ branchId, flowerId, values }) => values.map((forecastDemand, index) => ({
+    branchId,
+    branchName: branches.find((branch) => branch.id === branchId).name,
+    flowerId,
+    flowerName: flowers.find((flower) => flower.id === flowerId).name,
+    forecastDate: `2026-08-${13 + index}`,
+    horizon: index + 1,
+    forecastDemand,
+    forecastMethod: "ML",
+    modelVersion: "hgb-v1",
+    generatedAt: "2026-08-12T12:00:00.000Z",
+  })));
+  const tx = {
+    forecastRun: { create: jest.fn().mockResolvedValue({ id: 11 }) },
+    forecastResult: { createMany: jest.fn().mockResolvedValue({ count: 12 }) },
+    distributionPlan: { create: jest.fn().mockResolvedValue({ id: 22 }) },
+  };
+  const sales = branches.map((branch) => ({
+    branchId: branch.id,
+    salesDate: "2026-08-12",
+    items: flowers.map((flower) => ({ flowerId: flower.id, soldQuantity: "1.00", damagedQuantity: "0.00" })),
+  }));
+  const prismaClient = {
+    dailySale: { findMany: jest.fn().mockResolvedValue(sales) },
+    distributionPlan: { findFirst: jest.fn().mockResolvedValue(null) },
+    receiving: {
+      findUnique: jest.fn().mockResolvedValue({
+        id: 123,
+        status: "COMPLETED",
+        items: [
+          { flowerId: 2, acceptedQuantity: "30.00" },
+          { flowerId: 3, acceptedQuantity: "60.00" },
+        ],
+      }),
+    },
+    branch: { findMany: jest.fn().mockResolvedValue(branches) },
+    flower: { findMany: jest.fn().mockResolvedValue(flowers) },
+    systemConfiguration: {
+      findUnique: jest.fn(({ where }) => Promise.resolve({ value: where.key === "AI_MINIMUM_HISTORY" ? "1" : "0" })),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    branchStockLot: { findMany: jest.fn().mockResolvedValue([]) },
+    distributionBatchAllocation: { findMany: jest.fn().mockResolvedValue([]) },
+    flowerBatch: { groupBy: jest.fn().mockResolvedValue([{ flowerId: 2, _sum: { availableQuantity: "100.00" } }]) },
+    $transaction: jest.fn(async (callback) => callback(tx)),
+  };
+  const forecastClient = jest.fn().mockResolvedValue({
+    cutoffDate: "2026-08-12",
+    forecastMethod: "ML",
+    modelVersion: "hgb-v1",
+    results,
+  });
+
+  await expect(generateForecast(
+    { planningDate: "2026-08-15", modelVersion: "hgb-v1", receivingId: 123 },
+    {
+      prismaClient,
+      forecastClient,
+      responseValidator: (response) => response,
+      now: () => new Date("2026-08-14T05:00:00.000Z"),
+    }
+  )).resolves.toEqual({ forecastRunId: 11, distributionPlanId: 22 });
+
+  expect(forecastClient).toHaveBeenCalledWith({
+    forecastDate: "2026-08-12",
+    eligiblePairs: [
+      { branchId: 1, flowerId: 2 },
+      { branchId: 1, flowerId: 3 },
+      { branchId: 2, flowerId: 2 },
+      { branchId: 2, flowerId: 3 },
+    ],
+    modelVersion: "hgb-v1",
+  });
+  const persistedResults = tx.forecastResult.createMany.mock.calls[0][0].data;
+  expect(persistedResults).toHaveLength(12);
+  expect(new Set(persistedResults.map(({ forecastPeriod }) => forecastPeriod))).toEqual(
+    new Set(["2026-08-13", "2026-08-14", "2026-08-15"])
+  );
+  expect(tx.distributionPlan.create).toHaveBeenCalledWith({
+    data: {
+      planningDate: new Date("2026-08-15T00:00:00.000Z"),
+      status: "DRAFT",
+      items: {
+        create: [
+          { branchId: 1, flowerId: 2, recommendedQuantity: "11.00", finalQuantity: "11.00" },
+          { branchId: 2, flowerId: 2, recommendedQuantity: "19.00", finalQuantity: "19.00" },
+          { branchId: 1, flowerId: 3, recommendedQuantity: "0.00", finalQuantity: "20.00" },
+          { branchId: 2, flowerId: 3, recommendedQuantity: "0.00", finalQuantity: "40.00" },
+        ],
+      },
+    },
+    select: { id: true },
+  });
+});
+
+test("translates a planningDate uniqueness race into the existing-plan conflict", async () => {
+  const dependencies = transactionFailureDependencies({
+    code: "P2002",
+    meta: { target: ["planningDate"] },
+  });
+
+  await expect(generateForecast(
+    { planningDate: "2026-08-15", receivingId: 123 },
+    dependencies
+  )).rejects.toMatchObject({
+    statusCode: 409,
+    message: "Distribution plan already exists for this planning date",
+  });
+});
+
+test.each([
+  { code: "P2002", meta: { target: ["otherField"] } },
+  { code: "P2002", meta: { target: "planningDate" } },
+  { code: "P2025", meta: { target: ["planningDate"] } },
+])("rethrows unrelated transaction error %#", async (error) => {
+  const dependencies = transactionFailureDependencies(error);
+
+  await expect(generateForecast(
+    { planningDate: "2026-08-15", receivingId: 123 },
+    dependencies
+  )).rejects.toBe(error);
+});
+
 test("builds forced allocations from accepted receiving quantity using recommendation weights", () => {
   const allocations = buildForcedAllocations(
     { items: [{ flowerId: 2, acceptedQuantity: "120.00" }] },
@@ -162,8 +380,8 @@ test("persists forecasts and creates a capped D+1 draft plan in one transaction"
   const responseValidator = jest.fn((response) => response);
 
   const result = await generateForecast(
-    { forecastDate: "2025-06-30", modelVersion: "hgb-v1" },
-    { prismaClient, forecastClient, responseValidator }
+    { planningDate: "2025-07-01", modelVersion: "hgb-v1" },
+    { prismaClient, forecastClient, responseValidator, now: () => new Date("2025-06-30T05:00:00.000Z") }
   );
 
   expect(result).toEqual({ forecastRunId: 11, distributionPlanId: 22 });
@@ -233,7 +451,7 @@ test("persists forecasts and creates a capped D+1 draft plan in one transaction"
   });
 });
 
-test("reuses an existing distribution plan for the same planning date", async () => {
+test("rejects an existing distribution plan for the same planning date", async () => {
   const prismaClient = {
     dailySale: {
       findMany: jest.fn().mockResolvedValue([{ salesDate: "2025-06-30" }]),
@@ -248,10 +466,13 @@ test("reuses an existing distribution plan for the same planning date", async ()
 
   await expect(
     generateForecast(
-      { forecastDate: "2025-06-30", modelVersion: "hgb-v1" },
-      { prismaClient, forecastClient, responseValidator }
+      { planningDate: "2025-07-01", modelVersion: "hgb-v1" },
+      { prismaClient, forecastClient, responseValidator, now: () => new Date("2025-06-30T05:00:00.000Z") }
     )
-  ).resolves.toEqual({ distributionPlanId: 77, reused: true });
+  ).rejects.toMatchObject({
+    statusCode: 409,
+    message: "Distribution plan already exists for this planning date",
+  });
 
   expect(prismaClient.distributionPlan.findFirst).toHaveBeenCalledWith({
     where: { planningDate: new Date("2025-07-01T00:00:00.000Z") },
@@ -280,8 +501,13 @@ test("rejects automatic generation when no completed receiving exists", async ()
 
   await expect(
     generateForecast(
-      { forecastDate: "2025-06-30", modelVersion: "hgb-v1" },
-      { prismaClient, forecastClient: jest.fn(), responseValidator: jest.fn() }
+      { planningDate: "2025-07-01", modelVersion: "hgb-v1" },
+      {
+        prismaClient,
+        forecastClient: jest.fn(),
+        responseValidator: jest.fn(),
+        now: () => new Date("2025-06-30T05:00:00.000Z"),
+      }
     )
   ).rejects.toMatchObject({
     statusCode: 409,
@@ -310,8 +536,13 @@ test("rejects existing distribution plan for planning date when receivingId is p
 
   await expect(
     generateForecast(
-      { forecastDate: "2025-06-30", modelVersion: "hgb-v1", receivingId: 123 },
-      { prismaClient, forecastClient: jest.fn(), responseValidator: jest.fn() }
+      { planningDate: "2025-07-01", modelVersion: "hgb-v1", receivingId: 123 },
+      {
+        prismaClient,
+        forecastClient: jest.fn(),
+        responseValidator: jest.fn(),
+        now: () => new Date("2025-06-30T05:00:00.000Z"),
+      }
     )
   ).rejects.toMatchObject({
     statusCode: 409,
@@ -326,16 +557,25 @@ test("rejects invalid receivingId before opening the write transaction", async (
     dailySale: {
       findMany: jest.fn().mockResolvedValue([{ salesDate: "2025-06-30" }]),
     },
+    distributionPlan: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     $transaction: jest.fn(),
   };
 
   await expect(
     generateForecast(
-      { forecastDate: "2025-06-30", receivingId: "abc" },
-      { prismaClient, forecastClient: jest.fn(), responseValidator: jest.fn() }
+      { planningDate: "2025-07-01", receivingId: "abc" },
+      {
+        prismaClient,
+        forecastClient: jest.fn(),
+        responseValidator: jest.fn(),
+        now: () => new Date("2025-06-30T05:00:00.000Z"),
+      }
     )
   ).rejects.toMatchObject({ statusCode: 422 });
 
+  expect(prismaClient.dailySale.findMany).toHaveBeenCalledWith({ select: { salesDate: true } });
   expect(prismaClient.$transaction).not.toHaveBeenCalled();
 });
 
@@ -355,8 +595,13 @@ test("rejects unknown receivingId before opening the write transaction", async (
 
   await expect(
     generateForecast(
-      { forecastDate: "2025-06-30", receivingId: 123 },
-      { prismaClient, forecastClient: jest.fn(), responseValidator: jest.fn() }
+      { planningDate: "2025-07-01", receivingId: 123 },
+      {
+        prismaClient,
+        forecastClient: jest.fn(),
+        responseValidator: jest.fn(),
+        now: () => new Date("2025-06-30T05:00:00.000Z"),
+      }
     )
   ).rejects.toMatchObject({ statusCode: 404 });
 
@@ -451,8 +696,13 @@ test("persists forced finalQuantity from receiving accepted quantity", async () 
 
   await expect(
     generateForecast(
-      { forecastDate: "2025-06-30", modelVersion: "hgb-v1", receivingId: 123 },
-      { prismaClient, forecastClient, responseValidator: (response) => response }
+      { planningDate: "2025-07-01", modelVersion: "hgb-v1", receivingId: 123 },
+      {
+        prismaClient,
+        forecastClient,
+        responseValidator: (response) => response,
+        now: () => new Date("2025-06-30T05:00:00.000Z"),
+      }
     )
   ).resolves.toEqual({ forecastRunId: 11, distributionPlanId: 22 });
 
@@ -533,8 +783,8 @@ test("falls back to baseline when the forecast service returns HTTP 500", async 
 
   await expect(
     generateForecast(
-      { forecastDate: "2025-06-30", modelVersion: "hgb-v1" },
-      { prismaClient, forecastClient, responseValidator }
+      { planningDate: "2025-07-01", modelVersion: "hgb-v1" },
+      { prismaClient, forecastClient, responseValidator, now: () => new Date("2025-06-30T05:00:00.000Z") }
     )
   ).resolves.toEqual({ forecastRunId: 11, distributionPlanId: 22 });
 
@@ -652,8 +902,8 @@ test("keeps forecast service and inventory reads outside the write transaction",
 
   await expect(
     generateForecast(
-      { forecastDate: "2025-06-30", modelVersion: "hgb-v1" },
-      { prismaClient, forecastClient, responseValidator }
+      { planningDate: "2025-07-01", modelVersion: "hgb-v1" },
+      { prismaClient, forecastClient, responseValidator, now: () => new Date("2025-06-30T05:00:00.000Z") }
     )
   ).resolves.toEqual({ forecastRunId: 11, distributionPlanId: 22 });
 
