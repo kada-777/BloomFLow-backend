@@ -112,12 +112,6 @@ function buildBaselineResults({ branches, flowers, sales, pairs, cutoffDate, win
   return results;
 }
 
-function nextPlanningDate(cutoffDate) {
-  const planningDate = new Date(`${dateText(cutoffDate)}T00:00:00.000Z`);
-  planningDate.setUTCDate(planningDate.getUTCDate() + 1);
-  return planningDate;
-}
-
 async function loadForecastHistory(tx, cutoffDate) {
   const cutoff = new Date(`${dateText(cutoffDate)}T00:00:00.000Z`);
   const [branches, flowers, sales, minimumHistoryConfig] = await Promise.all([
@@ -450,6 +444,9 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
   if (forecastHistory.eligiblePairs.length) {
     try {
       const mlResponse = dependencies.responseValidator(await dependencies.forecastClient(request));
+      if (mlResponse.cutoffDate !== cutoffDate) {
+        throw new Error("Forecast service cutoff does not match the requested cutoff");
+      }
       validateEligibleResults(mlResponse.results, forecastHistory.eligiblePairs);
       mlResults = mlResponse.results;
       mlModelVersion = mlResponse.modelVersion;
@@ -565,5 +562,4 @@ module.exports = {
   getPlanningMetadata,
   loadForecastHistory,
   loadInventorySnapshot,
-  nextPlanningDate,
 };

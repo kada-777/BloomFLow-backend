@@ -819,6 +819,99 @@ test("falls back to baseline when the forecast service returns HTTP 500", async 
   }));
 });
 
+test("falls back to baseline when the ML response cutoff does not match the sales cutoff", async () => {
+  const tx = {
+    forecastRun: { create: jest.fn().mockResolvedValue({ id: 11 }) },
+    forecastResult: { createMany: jest.fn().mockResolvedValue({ count: 3 }) },
+    distributionPlan: { create: jest.fn().mockResolvedValue({ id: 22 }) },
+  };
+  const sales = [{
+    branchId: 1,
+    salesDate: "2026-08-12",
+    items: [{ flowerId: 2, soldQuantity: "70.00", damagedQuantity: "0.00" }],
+  }];
+  const staleResults = [1, 2, 3].map((horizon) => ({
+    branchId: 1,
+    branchName: "Central",
+    flowerId: 2,
+    flowerName: "Rose",
+    forecastDate: `2026-08-${12 + horizon}`,
+    horizon,
+    forecastDemand: 99,
+    forecastMethod: "ML",
+    modelVersion: "hgb-v1",
+    generatedAt: "2026-08-11T12:00:00.000Z",
+  }));
+  const prismaClient = {
+    dailySale: { findMany: jest.fn().mockResolvedValue(sales) },
+    distributionPlan: { findFirst: jest.fn().mockResolvedValue(null) },
+    receiving: {
+      findUnique: jest.fn().mockResolvedValue({
+        id: 123,
+        status: "COMPLETED",
+        items: [{ flowerId: 2, acceptedQuantity: "10.00" }],
+      }),
+    },
+    branch: { findMany: jest.fn().mockResolvedValue([{ id: 1, name: "Central" }]) },
+    flower: { findMany: jest.fn().mockResolvedValue([{ id: 2, name: "Rose", variety: "Red" }]) },
+    systemConfiguration: {
+      findUnique: jest.fn(({ where }) => Promise.resolve({ value: where.key === "AI_MINIMUM_HISTORY" ? "1" : "0" })),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    branchStockLot: { findMany: jest.fn().mockResolvedValue([]) },
+    distributionBatchAllocation: { findMany: jest.fn().mockResolvedValue([]) },
+    flowerBatch: { groupBy: jest.fn().mockResolvedValue([{ flowerId: 2, _sum: { availableQuantity: "10.00" } }]) },
+    $transaction: jest.fn(async (callback) => callback(tx)),
+  };
+
+  await expect(generateForecast(
+    { planningDate: "2026-08-15", receivingId: 123 },
+    {
+      prismaClient,
+      forecastClient: jest.fn().mockResolvedValue({
+        cutoffDate: "2026-08-11",
+        forecastMethod: "ML",
+        modelVersion: "hgb-v1",
+        results: staleResults,
+      }),
+      responseValidator: (response) => response,
+      now: () => new Date("2026-08-14T05:00:00.000Z"),
+    }
+  )).resolves.toEqual({ forecastRunId: 11, distributionPlanId: 22 });
+
+  expect(tx.forecastRun.create).toHaveBeenCalledWith({
+    data: expect.objectContaining({
+      forecastMethod: "BASELINE",
+      modelVersion: "baseline-v1",
+      trainingDataUntil: new Date("2026-08-12T00:00:00.000Z"),
+    }),
+    select: { id: true },
+  });
+  expect(tx.forecastResult.createMany).toHaveBeenCalledWith({
+    data: expect.arrayContaining([
+      expect.objectContaining({
+        forecastPeriod: "2026-08-15",
+        forecastDemand: "10.00",
+        forecastMethod: "BASELINE",
+      }),
+    ]),
+  });
+  expect(tx.distributionPlan.create).toHaveBeenCalledWith({
+    data: expect.objectContaining({
+      planningDate: new Date("2026-08-15T00:00:00.000Z"),
+      items: {
+        create: [{
+          branchId: 1,
+          flowerId: 2,
+          recommendedQuantity: "10.00",
+          finalQuantity: "10.00",
+        }],
+      },
+    }),
+    select: { id: true },
+  });
+});
+
 test("keeps forecast service and inventory reads outside the write transaction", async () => {
   const calls = [];
   const historyRows = [
