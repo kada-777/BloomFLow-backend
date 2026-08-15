@@ -112,6 +112,14 @@ global_rules:
   - Operasi yang mengubah stok dan membuat audit movement harus menggunakan transaksi database atomik.
   - Stok tidak boleh dimanipulasi secara manual.
   - Setiap perubahan saldo wajib memiliki referensi transaksi.
+  - Sebelum menerapkan unique index planningDate distribution plan, operator wajib menjalankan query berikut dan
+    menghentikan deployment untuk resolusi product/data owner jika query mengembalikan baris. Tidak ada cleanup
+    duplikat otomatis.
+  distribution_plan_planning_date_precheck: |-
+    SELECT "planningDate", COUNT(*)
+    FROM "distribution_plans"
+    GROUP BY "planningDate"
+    HAVING COUNT(*) > 1;
   inventory:
   - Saldo inventory tidak boleh negatif.
   - Tidak diperbolehkan pengurangan stok parsial ketika stok tidak cukup.
@@ -277,7 +285,8 @@ business_modules:
     - save_daily_sales
   distribution_planning:
     workflow:
-    - POST /distribution-plans/generate
+    - GET /forecasts/planning-metadata
+    - POST /forecasts
     - PATCH /distribution-plans/:id
     - POST /distribution-plans/:id/finalize
     - POST /distribution-plans/:id/create-orders
@@ -285,6 +294,11 @@ business_modules:
       primary_method: ML
       fallback_method: BASELINE
       fallback_description: Moving average digunakan ketika riwayat belum memenuhi batas minimum.
+      date_ownership:
+      - Backend menentukan cutoff dari tanggal Daily Sales terbaru.
+      - Backend menghitung horizon 1-3 dari cutoff ke planningDate.
+      - Backend menentukan tanggal hari ini menggunakan zona waktu Asia/Jakarta.
+      - Frontend hanya memilih planningDate dan tidak mengirim forecastDate, cutoff, atau horizon.
       required_metadata:
       - forecastMethod
       - modelVersion
@@ -358,9 +372,9 @@ business_modules:
 ml_service:
   description: Layanan internal terpisah (FastAPI) untuk demand forecasting. 
     Tidak diakses langsung oleh frontend; hanya dipanggil oleh backend saat 
-    POST /distribution-plans/generate.
+    POST /forecasts.
   internal: true
-  base_url_env: ML_SERVICE_URL
+  base_url_env: FORECAST_SERVICE_URL
   authentication: none_internal_network
   error_handling:
     on_failure: Backend menangkap error dari ML service dan fallback ke 
@@ -370,13 +384,28 @@ ml_service:
     path: /health
   - method: POST
     path: /forecast
-    called_by: backend (POST /distribution-plans/generate)
+    called_by: backend (POST /forecasts)
     request:
-      body: {branchIds[], flowerIds[], planningDate, planningHorizon}
+      body:
+        forecastDate:
+          type: string
+          format: date
+          description: Cutoff Daily Sales yang ditentukan backend.
+        eligiblePairs:
+          type: array
+          items: {branchId: integer, flowerId: integer}
+        modelVersion:
+          type: string
+          required: false
     response:
-      runId, trainingDataUntil,
-      results: [{branchId, flowerId, forecastDemand, forecastPeriod, 
-                 forecastMethod, modelVersion, confidenceInterval}]
+      cutoffDate: date
+      forecastMethod: ML atau BASELINE
+      modelVersion: string
+      results:
+        description: Setiap pasangan branch dan flower memiliki tepat horizon 1, 2, dan 3.
+        items: {branchId: integer, branchName: string, flowerId: integer, flowerName: string,
+          forecastDate: date, horizon: 1|2|3, forecastDemand: non-negative number,
+          forecastMethod: ML|BASELINE, modelVersion: string, generatedAt: date-time}
 endpoints:
 - id: 1
   method: POST
@@ -619,11 +648,65 @@ endpoints:
   - STAFF_HEAD_OFFICE
 - id: 28
   method: POST
-  path: /distribution-plans/generate
-  summary: Generate rekomendasi distribusi menggunakan ML atau baseline
+  path: /forecasts
+  summary: Generate forecast dan draft rencana distribusi untuk planningDate yang dipilih
   access:
   - STAFF_HEAD_OFFICE
+  authentication: JWT Bearer
+  request:
+    body:
+      planningDate:
+        type: string
+        format: date
+        required: true
+        description: Tanggal kalender YYYY-MM-DD. Backend menentukan cutoff, horizon, dan hari ini Asia/Jakarta.
+      modelVersion:
+        type: string
+        required: false
+      receivingId:
+        type: integer
+        required: false
+    prohibited_frontend_fields:
+    - forecastDate
+    - cutoff
+    - horizon
+  responses:
+    201:
+      description: Forecast dan draft distribution plan berhasil dibuat.
+      body: {success: true, data: {forecastRunId: integer, distributionPlanId: integer}}
+    409:
+      description: Distribution plan sudah ada untuk planningDate yang sama.
+    422:
+      description: planningDate hilang, bukan tanggal YYYY-MM-DD yang valid, sebelum tanggal server, tidak setelah
+        cutoff Daily Sales, atau berada di luar horizon forecast 1-3.
   result_status: DRAFT
+- id: 42
+  method: GET
+  path: /forecasts/planning-metadata
+  summary: Mengambil pilihan planningDate berdasarkan cutoff dan tanggal server
+  access:
+  - STAFF_HEAD_OFFICE
+  authentication: JWT Bearer
+  response:
+    http_status: 200
+    body:
+      success: true
+      data:
+        serverDate: {type: string, format: date, nullable: false}
+        cutoffDate: {type: string, format: date, nullable: true}
+        minimumPlanningDate: {type: string, format: date, nullable: true}
+        maximumPlanningDate: {type: string, format: date, nullable: true}
+        planningDates:
+          type: array
+          items:
+            date: {type: string, format: date, nullable: false}
+            horizon: {type: integer, enum: [1, 2, 3], nullable: false}
+            available: {type: boolean, nullable: false}
+            reason: {type: string, enum: [PLAN_ALREADY_EXISTS], nullable: true}
+        unavailableReason:
+          type: string
+          enum: [DAILY_SALES_REQUIRED, SALES_DATA_OUTDATED, ALL_DATES_HAVE_PLANS]
+          nullable: true
 - id: 29
   method: GET
   path: /distribution-plans/:id

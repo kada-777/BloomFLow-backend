@@ -219,7 +219,7 @@ model ForecastResult {
 model DistributionPlan {
   id           Int                    @id @default(autoincrement())
   status       DistributionPlanStatus @default(DRAFT)
-  planningDate DateTime               @db.Date
+  planningDate DateTime               @unique @db.Date
   items        DistributionPlanItem[]
   orders       DistributionOrder[]
 
