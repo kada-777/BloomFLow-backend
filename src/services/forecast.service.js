@@ -7,6 +7,7 @@ const {
 } = require("../utils/flower-status");
 const { requestForecast } = require("./forecast-client");
 const { validateForecastResponse } = require("./forecast-validation.service");
+const { getPlanningMetadata } = require("./planning-date.service");
 
 function addQuantity(map, key, value) {
   map.set(key, (map.get(key) ?? 0n) + toMinorUnits(value ?? "0"));
@@ -542,6 +543,7 @@ module.exports = {
   buildRecommendations,
   generateForecast,
   getEligiblePairs,
+  getPlanningMetadata,
   loadForecastHistory,
   loadInventorySnapshot,
   nextPlanningDate,
