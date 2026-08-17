@@ -146,9 +146,43 @@ function parseReceivedDateFilter(value) {
   return new Date(`${value}T00:00:00.000Z`);
 }
 
+function parseFarmIdFilter(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const farmId = Number(value);
+  if (!Number.isInteger(farmId) || farmId < 1) {
+    validationError([{ field: "farmId", message: "farmId must be a positive integer" }]);
+  }
+  return farmId;
+}
+
+function parseSearchFilter(value) {
+  if (value === undefined || value === null) return "";
+  if (typeof value !== "string") {
+    validationError([{ field: "search", message: "search must be a string" }]);
+  }
+  return value.trim();
+}
+
 async function list(pagination, filters = {}, dependencies = { prismaClient: prisma }) {
   const receivedDate = parseReceivedDateFilter(filters.receivedDate);
-  const where = receivedDate ? { receivedDate } : {};
+  const farmId = parseFarmIdFilter(filters.farmId);
+  const search = parseSearchFilter(filters.search);
+  const numericSearch = /^\d+$/.test(search) ? Number(search) : undefined;
+  const filtersToApply = [];
+
+  if (receivedDate) filtersToApply.push({ receivedDate });
+  if (farmId) filtersToApply.push({ farmId });
+  if (search) {
+    const searchFilters = [
+      { farm: { is: { name: { contains: search, mode: "insensitive" } } } },
+    ];
+    if (Number.isSafeInteger(numericSearch) && numericSearch > 0) {
+      searchFilters.unshift({ id: numericSearch }, { farmId: numericSearch });
+    }
+    filtersToApply.push({ OR: searchFilters });
+  }
+
+  const where = filtersToApply.length ? { AND: filtersToApply } : {};
   const select = {
     id: true,
     farmId: true,
