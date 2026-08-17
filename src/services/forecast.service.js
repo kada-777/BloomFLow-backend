@@ -17,40 +17,6 @@ function addQuantity(map, key, value) {
   map.set(key, (map.get(key) ?? 0n) + toMinorUnits(value ?? "0"));
 }
 
-function aggregateReceivingItems(receivings) {
-  const quantities = new Map();
-  for (const receiving of receivings) {
-    for (const item of receiving.items ?? []) {
-      addQuantity(quantities, item.flowerId, item.acceptedQuantity);
-    }
-  }
-  return [...quantities.entries()].map(([flowerId, quantity]) => ({
-    flowerId,
-    acceptedQuantity: minorUnitsToString(quantity),
-  }));
-}
-
-function validationError(errors) {
-  throw new HttpError(422, "Validation failed", errors);
-}
-
-function parseOptionalReceivingId(value) {
-  if (value === undefined || value === null || value === "") return null;
-  const id = Number(value);
-  if (!Number.isInteger(id) || id < 1) {
-    validationError([{ field: "receivingId", message: "receivingId must be a positive integer" }]);
-  }
-  return id;
-}
-
-function toWholeUnits(value) {
-  return toMinorUnits(value) / 100n;
-}
-
-function wholeUnitsToString(value) {
-  return minorUnitsToString(value * 100n);
-}
-
 function getEligiblePairs(historyByPair, minimumHistory) {
   return [...historyByPair.entries()]
     .filter(([, historyDays]) => historyDays >= minimumHistory)
@@ -165,8 +131,18 @@ function validateEligibleResults(results, eligiblePairs) {
   const eligibleKeys = new Set(eligiblePairs.map((pair) => `${pair.branchId}:${pair.flowerId}`));
   const resultKeys = new Set(results.map((result) => `${result.branchId}:${result.flowerId}`));
   if (resultKeys.size !== eligibleKeys.size || [...resultKeys].some((key) => !eligibleKeys.has(key))) {
-    throw new Error("Forecast service returned results outside eligiblePairs");
+    const error = new Error("Forecast service returned results outside eligiblePairs");
+    error.code = "PAIR_SET_MISMATCH";
+    throw error;
   }
+}
+
+function forecastFailureReason(error) {
+  if (error?.code === "CUTOFF_MISMATCH" || error?.code === "PAIR_SET_MISMATCH") return error.code;
+  if (error?.name === "ForecastResponseError") return "VALIDATION";
+  if (error?.name === "ForecastServiceError" && error.statusCode) return "HTTP";
+  if (error?.name === "ForecastServiceError") return "TIMEOUT";
+  return "UNKNOWN";
 }
 
 function buildRecommendations(results, branchLots, inTransit, headOfficeStock, safetyStock) {
@@ -223,133 +199,6 @@ function buildRecommendations(results, branchLots, inTransit, headOfficeStock, s
   }));
 }
 
-function allocateIntegerByWeight(totalUnits, weightedBranches) {
-  if (totalUnits <= 0n || !weightedBranches.length) return new Map();
-
-  const totalWeight = weightedBranches.reduce((sum, entry) => sum + entry.weight, 0n);
-  const allocations = [];
-  let allocated = 0n;
-
-  for (const entry of weightedBranches) {
-    const numerator = totalUnits * entry.weight;
-    const quantity = numerator / totalWeight;
-    const remainder = numerator % totalWeight;
-    allocations.push({ ...entry, quantity, remainder });
-    allocated += quantity;
-  }
-
-  let remaining = totalUnits - allocated;
-  allocations.sort((left, right) => {
-    if (left.remainder !== right.remainder) return left.remainder > right.remainder ? -1 : 1;
-    return left.branchId - right.branchId;
-  });
-
-  for (const allocation of allocations) {
-    if (remaining <= 0n) break;
-    allocation.quantity += 1n;
-    remaining -= 1n;
-  }
-
-  return new Map(
-    allocations.map((allocation) => [
-      `${allocation.branchId}:${allocation.flowerId}`,
-      wholeUnitsToString(allocation.quantity),
-    ])
-  );
-}
-
-function buildForcedAllocations(receiving, recommendations, selectedResults, branches) {
-  if (!receiving) return new Map();
-
-  const allocations = new Map();
-  const branchIds = branches.map((branch) => branch.id).sort((left, right) => left - right);
-
-  for (const item of receiving.items) {
-    const totalReceived = toWholeUnits(item.acceptedQuantity);
-    if (totalReceived <= 0n || !branchIds.length) continue;
-
-    let weights = branchIds.map((branchId) => {
-      const recommendation = recommendations.find(
-        (entry) => entry.branchId === branchId && entry.flowerId === item.flowerId
-      );
-      return {
-        branchId,
-        flowerId: item.flowerId,
-        weight: toMinorUnits(recommendation?.recommendedQuantity ?? "0"),
-      };
-    });
-
-    const totalRecommended = weights.reduce((sum, entry) => sum + entry.weight, 0n);
-    if (totalRecommended === 0n) {
-      weights = branchIds.map((branchId) => {
-        const forecast = selectedResults.find(
-          (entry) => entry.branchId === branchId && entry.flowerId === item.flowerId
-        );
-        return {
-          branchId,
-          flowerId: item.flowerId,
-          weight: toMinorUnits(forecast?.forecastDemand ?? "0"),
-        };
-      });
-    }
-
-    const totalWeight = weights.reduce((sum, entry) => sum + entry.weight, 0n);
-    if (totalWeight === 0n) {
-      weights = branchIds.map((branchId) => ({ branchId, flowerId: item.flowerId, weight: 1n }));
-    }
-
-    for (const [key, quantity] of allocateIntegerByWeight(totalReceived, weights)) {
-      allocations.set(key, quantity);
-    }
-  }
-
-  return allocations;
-}
-
-async function loadReceivingForAllocation(prismaClient, receivingId) {
-  if (!receivingId) {
-    const latest = await prismaClient.receiving.findFirst({
-      where: { status: "COMPLETED" },
-      select: { receivedDate: true },
-      orderBy: [{ receivedDate: "desc" }, { id: "desc" }],
-    });
-    if (!latest) {
-      throw new HttpError(
-        409,
-        "A completed receiving is required before generating a distribution plan",
-      );
-    }
-
-    const receivings = await prismaClient.receiving.findMany({
-      where: { status: "COMPLETED", receivedDate: latest.receivedDate },
-      select: {
-        items: { select: { flowerId: true, acceptedQuantity: true } },
-      },
-    });
-
-    return {
-      id: null,
-      status: "COMPLETED",
-      items: aggregateReceivingItems(receivings),
-    };
-  }
-
-  const receiving = await prismaClient.receiving.findUnique({
-    where: { id: receivingId },
-    select: {
-      id: true,
-      status: true,
-      items: { select: { flowerId: true, acceptedQuantity: true } },
-    },
-  });
-  if (!receiving) throw new HttpError(404, "Receiving not found");
-  if (receiving.status !== "COMPLETED") {
-    throw new HttpError(409, "Only COMPLETED receiving can be allocated");
-  }
-
-  return receiving;
-}
-
 async function loadInventorySnapshot(tx) {
   const [branchLots, inTransit, groupedHeadOfficeStock, configuration, ageConfigurations] = await Promise.all([
     tx.branchStockLot.findMany({
@@ -403,6 +252,7 @@ function getDefaultDependencies() {
     prismaClient: require("../lib/prisma"),
     forecastClient: requestForecast,
     responseValidator: validateForecastResponse,
+    logger: console,
   };
 }
 
@@ -431,28 +281,38 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
     throw new HttpError(409, "Distribution plan already exists for this planning date");
   }
 
-  const receivingId = parseOptionalReceivingId(options.receivingId);
-  const receiving = await loadReceivingForAllocation(dependencies.prismaClient, receivingId);
-
   const forecastHistory = await loadForecastHistory(dependencies.prismaClient, cutoffDate);
   const request = { forecastDate: cutoffDate, eligiblePairs: forecastHistory.eligiblePairs };
   if (options.modelVersion) request.modelVersion = options.modelVersion;
 
   let mlResults = [];
-  let mlModelVersion = options.modelVersion ?? "hgb-v1";
   let useBaselineForAllPairs = false;
+  const logger = dependencies.logger ?? console;
   if (forecastHistory.eligiblePairs.length) {
     try {
       const mlResponse = dependencies.responseValidator(await dependencies.forecastClient(request));
       if (mlResponse.cutoffDate !== cutoffDate) {
-        throw new Error("Forecast service cutoff does not match the requested cutoff");
+        const error = new Error("Forecast service cutoff does not match the requested cutoff");
+        error.code = "CUTOFF_MISMATCH";
+        throw error;
       }
       validateEligibleResults(mlResponse.results, forecastHistory.eligiblePairs);
       mlResults = mlResponse.results;
-      mlModelVersion = mlResponse.modelVersion;
-    } catch {
+    } catch (error) {
+      logger.warn("ML forecast failed; using baseline", {
+        reason: forecastFailureReason(error),
+        cutoffDate,
+        eligiblePairCount: forecastHistory.eligiblePairs.length,
+        ...(error?.statusCode ? { statusCode: error.statusCode } : {}),
+      });
       useBaselineForAllPairs = true;
     }
+  } else {
+    logger.info("ML forecast skipped", {
+      reason: "NO_ELIGIBLE_PAIRS",
+      cutoffDate,
+      eligiblePairCount: 0,
+    });
   }
   const baselineResults = buildBaselineResults({
     branches: forecastHistory.branches,
@@ -462,12 +322,9 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
     cutoffDate,
   });
   const results = [...mlResults, ...baselineResults];
-  const forecastMethod = mlResults.length && baselineResults.length
-    ? "MIXED"
-    : (mlResults.length ? "ML" : "BASELINE");
-  const modelVersion = forecastMethod === "MIXED"
-    ? "mixed"
-    : (mlResults.length ? mlModelVersion : "baseline-v1");
+  const forecastMethods = new Set(results.map((result) => result.forecastMethod));
+  const forecastMethod = forecastMethods.size > 1 ? "MIXED" : [...forecastMethods][0];
+  const modelVersion = forecastMethod === "MIXED" ? "mixed" : results[0].modelVersion;
   const selectedResults = results.filter((result) => result.horizon === selectedHorizon);
 
   const snapshot = await loadInventorySnapshot(dependencies.prismaClient);
@@ -478,21 +335,6 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
     snapshot.headOfficeStock,
     snapshot.safetyStock
   );
-  const receivedFlowerIds = new Set(
-    receiving.items
-      .filter((item) => toWholeUnits(item.acceptedQuantity) > 0n)
-      .map((item) => item.flowerId)
-  );
-  const scopedRecommendations = recommendations.filter((recommendation) =>
-    receivedFlowerIds.has(recommendation.flowerId)
-  );
-  const forcedAllocations = buildForcedAllocations(
-    receiving,
-    scopedRecommendations,
-    selectedResults,
-    forecastHistory.branches
-  );
-
   let persisted;
   try {
     persisted = await dependencies.prismaClient.$transaction(async (tx) => {
@@ -523,15 +365,12 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
           planningDate: planningDateValue,
           status: "DRAFT",
           items: {
-            create: scopedRecommendations.map((recommendation) => {
-              const key = `${recommendation.branchId}:${recommendation.flowerId}`;
-              return {
-                branchId: recommendation.branchId,
-                flowerId: recommendation.flowerId,
-                recommendedQuantity: recommendation.recommendedQuantity,
-                ...(receiving ? { finalQuantity: forcedAllocations.get(key) ?? "0.00" } : {}),
-              };
-            }),
+            create: recommendations.map((recommendation) => ({
+              branchId: recommendation.branchId,
+              flowerId: recommendation.flowerId,
+              recommendedQuantity: recommendation.recommendedQuantity,
+              finalQuantity: recommendation.recommendedQuantity,
+            })),
           },
         },
         select: { id: true },
@@ -555,7 +394,6 @@ async function generateForecast(options = {}, dependencies = getDefaultDependenc
 
 module.exports = {
   buildBaselineResults,
-  buildForcedAllocations,
   buildRecommendations,
   generateForecast,
   getEligiblePairs,

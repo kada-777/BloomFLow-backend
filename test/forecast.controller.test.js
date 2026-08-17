@@ -29,7 +29,6 @@ test("triggers forecast generation and returns persisted identifiers", async () 
   expect(forecastService.generateForecast).toHaveBeenCalledWith({
     planningDate: "2025-07-01",
     modelVersion: "hgb-v1",
-    receivingId: 123,
   });
   expect(response.status).toHaveBeenCalledWith(201);
   expect(response.json).toHaveBeenCalledWith({
@@ -38,7 +37,7 @@ test("triggers forecast generation and returns persisted identifiers", async () 
   });
 });
 
-test("passes receivingId to forecast service", async () => {
+test("does not pass receivingId to forecast service", async () => {
   forecastService.generateForecast.mockResolvedValue({ forecastRunId: 11, distributionPlanId: 22 });
   const response = { status: jest.fn().mockReturnThis(), json: jest.fn() };
 
@@ -51,7 +50,6 @@ test("passes receivingId to forecast service", async () => {
   expect(forecastService.generateForecast).toHaveBeenCalledWith({
     planningDate: "2025-07-01",
     modelVersion: "hgb-v1",
-    receivingId: 123,
   });
 });
 

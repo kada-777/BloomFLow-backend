@@ -650,6 +650,7 @@ endpoints:
   method: POST
   path: /forecasts
   summary: Generate forecast dan draft rencana distribusi untuk planningDate yang dipilih
+  description: Receiving bukan prasyarat pembuatan rencana. Rencana mencakup setiap kombinasi branch dan flower, termasuk quantity 0 ketika stok HO tidak tersedia.
   access:
   - STAFF_HEAD_OFFICE
   authentication: JWT Bearer
@@ -662,9 +663,6 @@ endpoints:
         description: Tanggal kalender YYYY-MM-DD. Backend menentukan cutoff, horizon, dan hari ini Asia/Jakarta.
       modelVersion:
         type: string
-        required: false
-      receivingId:
-        type: integer
         required: false
     prohibited_frontend_fields:
     - forecastDate
