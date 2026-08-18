@@ -1,0 +1,236 @@
+const prisma = require("../lib/prisma");
+const { calculateFlowerStatus, getAgePeriods } = require("../utils/flower-status");
+const { minorUnitsToString, toMinorUnits } = require("../utils/branch-stock");
+const { paginateArray } = require("../utils/pagination");
+
+async function getHOStock(pagination) {
+  const grouped = await prisma.flowerBatch.groupBy({
+    by: ["flowerId"],
+    where: {
+      status: "AVAILABLE",
+      availableQuantity: { not: "0" },
+    },
+    _sum: { availableQuantity: true },
+  });
+
+  if (grouped.length === 0) return paginateArray([], pagination);
+
+  const flowerIds = grouped.map((g) => g.flowerId);
+  const flowers = await prisma.flower.findMany({
+    where: { id: { in: flowerIds } },
+    select: { id: true, name: true, variety: true },
+  });
+
+  const flowerMap = new Map(flowers.map((f) => [f.id, f]));
+
+  const data = grouped.map((g) => {
+    const flower = flowerMap.get(g.flowerId);
+    return {
+      flowerId: g.flowerId,
+      flowerName: flower?.name ?? null,
+      variety: flower?.variety ?? null,
+      totalAvailable: g._sum.availableQuantity ?? "0",
+    };
+  });
+
+  return paginateArray(data, pagination);
+}
+
+async function getBranchStock(pagination) {
+  const lots = await prisma.branchStockLot.findMany({
+    where: { quantity: { not: "0" } },
+    select: {
+      branchId: true,
+      flowerId: true,
+      quantity: true,
+      shippedAt: true,
+    },
+    orderBy: [{ branchId: "asc" }, { flowerId: "asc" }, { shippedAt: "asc" }],
+  });
+
+  if (lots.length === 0) return paginateArray([], pagination);
+
+  const { freshPeriod, gradeCPeriod } = await getAgePeriods();
+
+  const flowerIds = [...new Set(lots.map((l) => l.flowerId))];
+  const branchIds = [...new Set(lots.map((l) => l.branchId))];
+
+  const [flowers, branches] = await Promise.all([
+    prisma.flower.findMany({
+      where: { id: { in: flowerIds } },
+      select: { id: true, name: true, variety: true },
+    }),
+    prisma.branch.findMany({
+      where: { id: { in: branchIds } },
+      select: { id: true, name: true },
+    }),
+  ]);
+
+  const flowerMap = new Map(flowers.map((f) => [f.id, f]));
+  const branchMap = new Map(branches.map((b) => [b.id, b]));
+
+  const result = [];
+
+  for (const lot of lots) {
+    const flower = flowerMap.get(lot.flowerId);
+    const branch = branchMap.get(lot.branchId);
+    const status = calculateFlowerStatus(lot.shippedAt, freshPeriod, gradeCPeriod);
+
+    result.push({
+      branchId: lot.branchId,
+      branchName: branch?.name ?? null,
+      flowerId: lot.flowerId,
+      flowerName: flower?.name ?? null,
+      variety: flower?.variety ?? null,
+      quantity: lot.quantity,
+      shippedAt: lot.shippedAt,
+      flowerStatus: status,
+    });
+  }
+
+  return paginateArray(result, pagination);
+}
+
+async function getMyBranchStock(branchId, pagination, sort = "default") {
+  const lots = await prisma.branchStockLot.findMany({
+    where: {
+      branchId,
+      quantity: { not: "0" },
+    },
+    select: {
+      flowerId: true,
+      quantity: true,
+      shippedAt: true,
+    },
+    orderBy: [{ flowerId: "asc" }, { shippedAt: "asc" }],
+  });
+
+  if (lots.length === 0) return paginateArray([], pagination);
+
+  const { freshPeriod, gradeCPeriod } = await getAgePeriods();
+
+  const flowerIds = [...new Set(lots.map((l) => l.flowerId))];
+  const flowers = await prisma.flower.findMany({
+    where: { id: { in: flowerIds } },
+    select: { id: true, name: true, variety: true },
+  });
+
+  const flowerMap = new Map(flowers.map((f) => [f.id, f]));
+
+  const grouped = new Map();
+
+  for (const lot of lots) {
+    const status = calculateFlowerStatus(lot.shippedAt, freshPeriod, gradeCPeriod);
+    const flower = flowerMap.get(lot.flowerId);
+    const key = lot.flowerId;
+
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        flowerId: lot.flowerId,
+        flowerName: flower?.name ?? null,
+        variety: flower?.variety ?? null,
+      totalQuantity: 0n,
+        lots: [],
+      });
+    }
+
+    const entry = grouped.get(key);
+    entry.totalQuantity += toMinorUnits(lot.quantity);
+
+    entry.lots.push({
+      quantity: lot.quantity,
+      shippedAt: lot.shippedAt,
+      flowerStatus: status,
+    });
+  }
+
+  const data = Array.from(grouped.values()).map((entry) => ({
+    ...entry,
+    totalQuantity: minorUnitsToString(entry.totalQuantity),
+  }));
+
+  if (sort === "flower_asc" || sort === "flower_desc") {
+    data.sort((left, right) => {
+      const leftLabel = left.variety || left.flowerName || "";
+      const rightLabel = right.variety || right.flowerName || "";
+      const comparison = leftLabel.localeCompare(rightLabel, "id-ID", { sensitivity: "base" });
+      return sort === "flower_desc" ? comparison * -1 : comparison;
+    });
+  }
+
+  return paginateArray(data, pagination);
+}
+
+async function getMyBranchFlowerDetail(branchId, flowerIdValue) {
+  const flowerId = Number(flowerIdValue);
+  if (!Number.isInteger(flowerId) || flowerId < 1) {
+    const { HttpError } = require("../utils/http-error");
+    throw new HttpError(422, "Validation failed", [
+      { field: "flowerId", message: "flowerId must be a positive integer" },
+    ]);
+  }
+
+  const [flower, lots] = await Promise.all([
+    prisma.flower.findUnique({
+      where: { id: flowerId },
+      select: { id: true, name: true, variety: true },
+    }),
+    prisma.branchStockLot.findMany({
+      where: { branchId, flowerId, quantity: { not: "0" } },
+      select: { id: true, quantity: true, shippedAt: true, sourceOrderId: true },
+      orderBy: [{ shippedAt: "asc" }, { id: "asc" }],
+    }),
+  ]);
+
+  if (!flower || lots.length === 0) {
+    const { HttpError } = require("../utils/http-error");
+    throw new HttpError(404, "Branch inventory flower not found");
+  }
+
+  const sourceOrderIds = [...new Set(lots.map((lot) => lot.sourceOrderId))];
+  const [allocations, orders] = await Promise.all([
+    prisma.distributionBatchAllocation.findMany({
+      where: {
+        distributionOrderId: { in: sourceOrderIds },
+        batch: { flowerId },
+      },
+      select: {
+        distributionOrderId: true,
+        id: true,
+        batch: { select: { batchNumber: true, receivedDate: true } },
+      },
+      orderBy: [{ distributionOrderId: "asc" }, { id: "asc" }],
+    }),
+    prisma.distributionOrder.findMany({
+      where: { id: { in: sourceOrderIds } },
+      select: { id: true, receipt: { select: { receivedAt: true } } },
+    }),
+  ]);
+
+  const sourcesByOrder = new Map();
+  for (const allocation of allocations) {
+    const sources = sourcesByOrder.get(allocation.distributionOrderId) || [];
+    sources.push(allocation.batch);
+    sourcesByOrder.set(allocation.distributionOrderId, sources);
+  }
+
+  const receivedAtByOrder = new Map(
+    orders.map((order) => [order.id, order.receipt?.receivedAt || null])
+  );
+
+  const { freshPeriod, gradeCPeriod } = await getAgePeriods();
+  const now = Date.now();
+  const detailLots = lots.map((lot) => ({
+    id: lot.id,
+    quantity: lot.quantity,
+    shippedAt: lot.shippedAt,
+    receivedAt: receivedAtByOrder.get(lot.sourceOrderId) || lot.shippedAt,
+    ageDays: Math.max(0, Math.floor((now - new Date(lot.shippedAt).getTime()) / (1000 * 60 * 60 * 24))),
+    flowerStatus: calculateFlowerStatus(lot.shippedAt, freshPeriod, gradeCPeriod),
+    sourceBatches: sourcesByOrder.get(lot.sourceOrderId) || [],
+  }));
+
+  return { flower, lots: detailLots };
+}
+
+module.exports = { getHOStock, getBranchStock, getMyBranchStock, getMyBranchFlowerDetail };

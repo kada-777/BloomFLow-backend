@@ -1,0 +1,835 @@
+project:
+  name: BloomFlow
+  system: Flower Distribution Planning System
+  api_version: v1
+  description: Kontrak API terstruktur untuk sistem perencanaan distribusi bunga BloomFlow. Dokumen ini mempertahankan
+    terminologi, role, endpoint, status, dan aturan bisnis dari API Contract sumber.
+servers:
+  development: https://api-dev.bloomflow.com/v1
+  production: https://api.bloomflow.com/v1
+standards:
+  architecture: RESTful
+  content_type: application/json
+  authentication:
+    type: JWT
+    header: Authorization
+    scheme: Bearer
+    format: Bearer <token>
+    stateless: true
+    logout_strategy:
+      type: JTI_BLACKLIST
+      description: Saat logout, backend memasukkan JTI JWT ke cache blacklist hingga masa berlaku token habis.
+  roles:
+    SUPERADMIN:
+      alias: SA
+      description: Mengelola konfigurasi, master data, user, serta memiliki akses monitoring read-only ke seluruh
+        dashboard.
+    STAFF_HEAD_OFFICE:
+      alias: HO
+      description: Mengelola receiving HO, stok pusat, perencanaan distribusi, distribution order, dan dashboard
+        nasional.
+    STAFF_BRANCH:
+      alias: BR
+      description: Mengelola penjualan harian, menerima distribusi, melihat stok dan dashboard cabang sendiri.
+      security_rules:
+      - branchId wajib diambil dari JWT claims.
+      - branchId yang dikirim melalui request body harus diabaikan atau divalidasi ulang.
+      - Akses data harus dibatasi pada cabang milik user.
+  response_format:
+    success:
+      http_status:
+      - 200
+      - 201
+      body:
+        success: true
+        data: <object_or_array>
+    error:
+      http_status:
+      - 4xx
+      - 5xx
+      body:
+        success: false
+        code: <stable_error_code>
+        message: <global_error_message>
+        errors:
+        - field: <field_name>
+          message: <detail_error>
+    business_validation_status: 422
+  pagination:
+    applies_to:
+    - /users
+    - /farms
+    - /branches
+    - /flowers
+    - /receivings
+    - /inventory/head-office
+    - /inventory/branches
+    - /inventory/my-branch
+    - /daily-sales
+    - /distribution-plans
+    - /distributions
+    - /inventory-movements
+    query_parameters:
+      page:
+        type: integer
+        default: 1
+        minimum: 1
+      limit:
+        type: integer
+        default: 10
+        minimum: 1
+        maximum: 100
+    response:
+      success: true
+      data: <array>
+      pagination:
+        page: <integer>
+        limit: <integer>
+        totalItems: <integer>
+        totalPages: <integer>
+        hasNextPage: <boolean>
+        hasPreviousPage: <boolean>
+  error_codes:
+    UNAUTHORIZED:
+      http_status: 401
+      description: Token tidak ada, tidak valid, atau tidak dapat digunakan.
+    FORBIDDEN:
+      http_status: 403
+      description: User terautentikasi tetapi role tidak berhak mengakses endpoint.
+      frontend_action: Arahkan ke halaman /403.
+    ROUTE_NOT_FOUND:
+      http_status: 404
+      description: URL API tidak terdaftar.
+      frontend_action: Arahkan ke halaman /404.
+    RESOURCE_NOT_FOUND:
+      http_status: 404
+      description: Resource yang diminta tidak ditemukan atau berada di luar scope user.
+    RESOURCE_IN_USE:
+      http_status: 409
+      description: Resource tidak dapat dihapus karena sudah dipakai oleh data operasional.
+global_rules:
+  database:
+  - Operasi yang mengubah stok dan membuat audit movement harus menggunakan transaksi database atomik.
+  - Stok tidak boleh dimanipulasi secara manual.
+  - Setiap perubahan saldo wajib memiliki referensi transaksi.
+  - Sebelum menerapkan unique index planningDate distribution plan, operator wajib menjalankan query berikut dan
+    menghentikan deployment untuk resolusi product/data owner jika query mengembalikan baris. Tidak ada cleanup
+    duplikat otomatis.
+  distribution_plan_planning_date_precheck: |-
+    SELECT "planningDate", COUNT(*)
+    FROM "distribution_plans"
+    GROUP BY "planningDate"
+    HAVING COUNT(*) > 1;
+  inventory:
+  - Saldo inventory tidak boleh negatif.
+  - Tidak diperbolehkan pengurangan stok parsial ketika stok tidak cukup.
+  - Alokasi batch keluar menggunakan FIFO berdasarkan tanggal yang ditentukan oleh proses bisnis.
+configuration_keys:
+  DEFAULT_SAFETY_STOCK:
+    type: decimal
+    description: Nilai pengaman stok.
+  FRESH_PERIOD:
+    type: integer
+    unit: day
+    description: Durasi maksimal status FRESH.
+  GRADE_C_PERIOD:
+    type: integer
+    unit: day
+    description: Durasi penentuan status GRADE_C sebelum menjadi DAMAGED.
+  AI_PLANNING_HORIZON:
+    type: integer
+    unit: day
+    description: Jangka waktu prediksi distribusi.
+  AI_MINIMUM_HISTORY:
+    type: integer
+    description: Minimum riwayat penjualan agar model ML dapat digunakan.
+enums:
+  batch_status:
+  - AVAILABLE
+  - DEPLETED
+  distribution_plan_status:
+  - DRAFT
+  - FINALIZED
+  - ORDER_CREATED
+  distribution_order_status:
+  - DRAFT
+  - IN_TRANSIT
+  - RECEIVED
+  - CANCELLED
+  flower_status:
+  - FRESH
+  - GRADE_C
+  - DAMAGED
+  forecast_method:
+  - ML
+  - BASELINE
+  inventory_movement_type:
+  - RECEIVING_IN
+  - DISTRIBUTION_OUT
+  - DISTRIBUTION_IN
+  - SALE_OUT
+  - DAMAGED_OUT
+status_lifecycle:
+  batch_head_office:
+    AVAILABLE: quantity > 0
+    DEPLETED: quantity == 0
+  distribution_plan:
+  - from: null
+    to: DRAFT
+    event: plan_generated
+  - from: DRAFT
+    to: FINALIZED
+    event: plan_finalized
+  - from: FINALIZED
+    to: ORDER_CREATED
+    event: orders_created
+  distribution_order:
+  - from: null
+    to: DRAFT
+    event: order_created
+  - from: DRAFT
+    to: IN_TRANSIT
+    event: order_shipped
+  - from: IN_TRANSIT
+    to: RECEIVED
+    event: order_received
+  - from: DRAFT
+    to: CANCELLED
+    event: order_cancelled
+flower_age_logic:
+  head_office_inventory:
+    age_source: receivedDate
+    description: Umur bunga dihitung dari tanggal penerimaan batch dari kebun.
+  branch_inventory:
+    age_source: shippedAt
+    description: Umur bunga dihitung dari timestamp pengiriman distribusi.
+  default_ranges:
+    FRESH:
+      minimum_day: 0
+      maximum_day: 7
+    GRADE_C:
+      minimum_day: 8
+      maximum_day: 11
+    DAMAGED:
+      minimum_day_exclusive: 11
+  sales_lock: Bunga berstatus DAMAGED tidak boleh dijual.
+business_modules:
+  user_management:
+    access:
+    - SUPERADMIN
+    rules:
+    - Akun dinonaktifkan menggunakan isActive tanpa menghapus data historis.
+    - User STAFF_BRANCH wajib memiliki branchId yang valid.
+    - Reset password dilakukan melalui PATCH /users/:id.
+  master_data:
+    resources:
+    - farms
+    - branches
+    - flowers
+    write_access:
+    - SUPERADMIN
+    read_access:
+      farms:
+      - SUPERADMIN
+      - STAFF_HEAD_OFFICE
+      branches:
+      - SUPERADMIN
+      - STAFF_HEAD_OFFICE
+      flowers:
+      - SUPERADMIN
+      - STAFF_HEAD_OFFICE
+      - STAFF_BRANCH
+  receiving_head_office:
+    required_fields:
+    - shippedQuantity
+    - actualReceivedQuantity
+    - acceptedQuantity
+    - unusableQuantity
+    - unusableNotes
+    validations:
+    - expression: acceptedQuantity + unusableQuantity == actualReceivedQuantity
+      http_status: 422
+    - expression: actualReceivedQuantity <= shippedQuantity
+      http_status: 422
+    atomic_actions:
+    - create_receiving
+    - create_head_office_batch
+    - update_head_office_inventory
+    - create_inventory_movement
+    inventory_effect:
+      acceptedQuantity:
+        movement: RECEIVING_IN
+        adds_to_inventory: true
+      unusableQuantity:
+        movement: null
+        adds_to_inventory: false
+        storage: audit_metadata
+  daily_sales:
+    uniqueness:
+    - branchId
+    - salesDate
+    rules:
+    - Satu laporan penjualan per cabang per tanggal.
+    - Bunga DAMAGED tidak boleh dijual.
+    - Pengurangan stok menggunakan FIFO berdasarkan shippedAt terlama.
+    stock_validation:
+      expression: soldQuantity + damagedQuantity <= availableStock
+      failure_http_status: 422
+      failure_behavior: ROLLBACK_ALL
+      partial_deduction_allowed: false
+      error_detail: Kembalikan detail item yang kekurangan stok.
+    atomic_actions:
+    - reduce_branch_inventory
+    - create_SALE_OUT_movement
+    - create_DAMAGED_OUT_movement
+    - save_daily_sales
+  distribution_planning:
+    workflow:
+    - GET /forecasts/planning-metadata
+    - POST /forecasts
+    - PATCH /distribution-plans/:id
+    - POST /distribution-plans/:id/finalize
+    - POST /distribution-plans/:id/create-orders
+    forecast:
+      primary_method: ML
+      fallback_method: BASELINE
+      fallback_description: Moving average digunakan ketika riwayat belum memenuhi batas minimum.
+      date_ownership:
+      - Backend menentukan cutoff dari tanggal Daily Sales terbaru.
+      - Backend menghitung horizon 1-3 dari cutoff ke planningDate.
+      - Backend menentukan tanggal hari ini menggunakan zona waktu Asia/Jakarta.
+      - Frontend hanya memilih planningDate dan tidak mengirim forecastDate, cutoff, atau horizon.
+      required_metadata:
+      - forecastMethod
+      - modelVersion
+    adjustment:
+      rule: Jika recommendedQuantity != finalQuantity maka adjustmentReason wajib diisi.
+      adjustmentReason:
+        type: string
+        minimum_length: 5
+      validation_time: Sebelum plan difinalisasi.
+  distribution_shipping:
+    trigger: POST /distributions/:id/ship
+    required_current_status: DRAFT
+    result_status: IN_TRANSIT
+    order_granularity:
+      description: Satu distribution_order merepresentasikan satu pengiriman ke satu branch dan dapat berisi
+        banyak flower sekaligus. Tidak ada tabel distribution_order_items terpisah; breakdown per flower
+        didapat dari distribution_batch_allocations, karena setiap batch yang dialokasikan sudah memiliki flowerId.
+      created_from: distribution_plan_items yang di-group per branchId saat POST /distribution-plans/:id/create-orders
+    batch_allocation:
+      location: HEAD_OFFICE
+      method: FIFO
+    actions:
+    - allocate_head_office_batches
+    - set_shippedAt_to_current_timestamp
+    - reduce_head_office_inventory
+    - create_DISTRIBUTION_OUT_movement
+  distribution_receiving:
+    trigger: POST /distributions/:id/receive
+    actor: STAFF_BRANCH
+    required_current_status: IN_TRANSIT
+    result_status: RECEIVED
+    validation:
+      expression: receivedQuantity + damagedQuantity + missingQuantity == shippedQuantity
+      http_status: 422
+    inventory_effect:
+      receivedQuantity:
+        adds_to_branch_inventory: true
+        movement: DISTRIBUTION_IN
+      damagedQuantity:
+        adds_to_branch_inventory: false
+        movement: null
+        storage: logistics_audit
+      missingQuantity:
+        adds_to_branch_inventory: false
+        movement: null
+        storage: logistics_audit
+  dashboard:
+    SUPERADMIN:
+      scope: all
+      mode: read_only
+      mutation_allowed: false
+    STAFF_HEAD_OFFICE:
+      scope: national
+      metrics:
+      - total_inventory
+      - all_branch_sales_last_7_days
+      - national_flower_status
+    STAFF_BRANCH:
+      scope: own_branch
+      metrics:
+      - local_inventory
+      - local_sales_trend
+      - incoming_distribution
+  inventory_movements:
+    immutable_audit_trail: true
+    manual_adjustment_allowed: false
+    reference_fields:
+    - receivingId
+    - distributionId
+    - salesId
+ml_service:
+  description: Layanan internal terpisah (FastAPI) untuk demand forecasting. 
+    Tidak diakses langsung oleh frontend; hanya dipanggil oleh backend saat 
+    POST /forecasts.
+  internal: true
+  base_url_env: FORECAST_SERVICE_URL
+  authentication: none_internal_network
+  error_handling:
+    on_failure: Backend menangkap error dari ML service dan fallback ke 
+      forecastMethod=BASELINE tanpa merusak transaksi distribution plan.
+  endpoints:
+  - method: GET
+    path: /health
+  - method: POST
+    path: /forecast
+    called_by: backend (POST /forecasts)
+    request:
+      body:
+        forecastDate:
+          type: string
+          format: date
+          description: Cutoff Daily Sales yang ditentukan backend.
+        eligiblePairs:
+          type: array
+          items: {branchId: integer, flowerId: integer}
+        modelVersion:
+          type: string
+          required: false
+    response:
+      cutoffDate: date
+      forecastMethod: ML atau BASELINE
+      modelVersion: string
+      results:
+        description: Setiap pasangan branch dan flower memiliki tepat horizon 1, 2, dan 3.
+        items: {branchId: integer, branchName: string, flowerId: integer, flowerName: string,
+          forecastDate: date, horizon: 1|2|3, forecastDemand: non-negative number,
+          forecastMethod: ML|BASELINE, modelVersion: string, generatedAt: date-time}
+endpoints:
+- id: 1
+  method: POST
+  path: /auth/login
+  summary: Login user
+  access:
+  - PUBLIC
+  request:
+    body:
+      email:
+        type: string
+        format: email
+        required: true
+      password:
+        type: string
+        required: true
+  response_notes: Mengembalikan JWT.
+- id: 2
+  method: GET
+  path: /auth/me
+  summary: Mengambil profil user dari token aktif
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+  - STAFF_BRANCH
+- id: 3
+  method: POST
+  path: /auth/logout
+  summary: Logout dan blacklist token
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+  - STAFF_BRANCH
+  side_effects:
+  - Blacklist JTI hingga token kedaluwarsa.
+- id: 4
+  method: GET
+  path: /users
+  summary: List user
+  access:
+  - SUPERADMIN
+- id: 5
+  method: POST
+  path: /users
+  summary: Create user
+  access:
+  - SUPERADMIN
+  rules:
+  - STAFF_BRANCH wajib menyertakan branchId valid.
+- id: 6
+  method: PATCH
+  path: /users/:id
+  summary: Update user, status akun, atau password
+  access:
+  - SUPERADMIN
+  supported_fields:
+  - isActive
+  - password
+  - role
+  - branchId
+- id: 7
+  method: GET
+  path: /farms
+  summary: List kebun
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+- id: 8
+  method: POST
+  path: /farms
+  summary: Create kebun
+  access:
+  - SUPERADMIN
+- id: 9
+  method: PATCH
+  path: /farms/:id
+  summary: Update kebun
+  access:
+  - SUPERADMIN
+- id: 39
+  method: DELETE
+  path: /farms/:id
+  summary: Hard delete kebun
+  access:
+  - SUPERADMIN
+  error_status: 409 jika kebun sudah dipakai receiving.
+- id: 10
+  method: GET
+  path: /branches
+  summary: List cabang
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+- id: 11
+  method: POST
+  path: /branches
+  summary: Create cabang
+  access:
+  - SUPERADMIN
+- id: 12
+  method: PATCH
+  path: /branches/:id
+  summary: Update cabang
+  access:
+  - SUPERADMIN
+- id: 40
+  method: DELETE
+  path: /branches/:id
+  summary: Hard delete cabang
+  access:
+  - SUPERADMIN
+  error_status: 409 jika cabang sudah dipakai data operasional.
+- id: 13
+  method: GET
+  path: /flowers
+  summary: Katalog bunga
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+  - STAFF_BRANCH
+- id: 14
+  method: POST
+  path: /flowers
+  summary: Create bunga
+  access:
+  - SUPERADMIN
+- id: 15
+  method: PATCH
+  path: /flowers/:id
+  summary: Update bunga
+  access:
+  - SUPERADMIN
+- id: 41
+  method: DELETE
+  path: /flowers/:id
+  summary: Hard delete bunga
+  access:
+  - SUPERADMIN
+  error_status: 409 jika bunga sudah dipakai data operasional.
+- id: 16
+  method: GET
+  path: /configurations
+  summary: List parameter sistem
+  access:
+  - SUPERADMIN
+- id: 17
+  method: PATCH
+  path: /configurations/:key
+  summary: Update parameter sistem
+  access:
+  - SUPERADMIN
+  validation_status: 422
+- id: 18
+  method: GET
+  path: /receivings
+  summary: List receiving Head Office
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+- id: 19
+  method: POST
+  path: /receivings
+  summary: Create receiving dan quality control
+  access:
+  - STAFF_HEAD_OFFICE
+  transaction: ATOMIC
+  request:
+    required_fields:
+    - shippedQuantity
+    - actualReceivedQuantity
+    - acceptedQuantity
+    - unusableQuantity
+    - unusableNotes
+- id: 20
+  method: GET
+  path: /receivings/:id
+  summary: Detail receiving
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+- id: 21
+  method: GET
+  path: /inventory/head-office
+  summary: Stok pusat
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+- id: 22
+  method: GET
+  path: /inventory/branches
+  summary: Agregasi stok seluruh cabang
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+- id: 23
+  method: GET
+  path: /inventory/my-branch
+  summary: Stok cabang user aktif
+  access:
+  - STAFF_BRANCH
+  security:
+  - Filter menggunakan branchId dari JWT claim.
+- id: 24
+  method: GET
+  path: /daily-sales
+  summary: List penjualan
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+  - STAFF_BRANCH
+  scope_rules:
+  - STAFF_BRANCH hanya boleh melihat data cabangnya.
+  - SUPERADMIN dan STAFF_HEAD_OFFICE dapat melihat data lintas cabang.
+- id: 25
+  method: POST
+  path: /daily-sales
+  summary: Submit penjualan harian
+  access:
+  - STAFF_BRANCH
+  transaction: ATOMIC
+  allocation: FIFO
+  security:
+  - branchId menggunakan JWT claim.
+- id: 26
+  method: GET
+  path: /daily-sales/:id
+  summary: Detail penjualan
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+  - STAFF_BRANCH
+  scope_rules:
+  - STAFF_BRANCH hanya boleh membuka data cabangnya.
+- id: 27
+  method: GET
+  path: /distribution-plans
+  summary: List rencana distribusi
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+- id: 28
+  method: POST
+  path: /forecasts
+  summary: Generate forecast dan draft rencana distribusi untuk planningDate yang dipilih
+  description: Receiving bukan prasyarat pembuatan rencana. Rencana mencakup setiap kombinasi branch dan flower, termasuk quantity 0 ketika stok HO tidak tersedia.
+  access:
+  - STAFF_HEAD_OFFICE
+  authentication: JWT Bearer
+  request:
+    body:
+      planningDate:
+        type: string
+        format: date
+        required: true
+        description: Tanggal kalender YYYY-MM-DD. Backend menentukan cutoff, horizon, dan hari ini Asia/Jakarta.
+      modelVersion:
+        type: string
+        required: false
+    prohibited_frontend_fields:
+    - forecastDate
+    - cutoff
+    - horizon
+  responses:
+    201:
+      description: Forecast dan draft distribution plan berhasil dibuat.
+      body: {success: true, data: {forecastRunId: integer, distributionPlanId: integer}}
+    409:
+      description: Distribution plan sudah ada untuk planningDate yang sama.
+    422:
+      description: planningDate hilang, bukan tanggal YYYY-MM-DD yang valid, sebelum tanggal server, tidak setelah
+        cutoff Daily Sales, atau berada di luar horizon forecast 1-3.
+  result_status: DRAFT
+- id: 42
+  method: GET
+  path: /forecasts/planning-metadata
+  summary: Mengambil pilihan planningDate berdasarkan cutoff dan tanggal server
+  access:
+  - STAFF_HEAD_OFFICE
+  authentication: JWT Bearer
+  response:
+    http_status: 200
+    body:
+      success: true
+      data:
+        serverDate: {type: string, format: date, nullable: false}
+        cutoffDate: {type: string, format: date, nullable: true}
+        minimumPlanningDate: {type: string, format: date, nullable: true}
+        maximumPlanningDate: {type: string, format: date, nullable: true}
+        planningDates:
+          type: array
+          items:
+            date: {type: string, format: date, nullable: false}
+            horizon: {type: integer, enum: [1, 2, 3], nullable: false}
+            available: {type: boolean, nullable: false}
+            reason: {type: string, enum: [PLAN_ALREADY_EXISTS], nullable: true}
+        unavailableReason:
+          type: string
+          enum: [DAILY_SALES_REQUIRED, SALES_DATA_OUTDATED, ALL_DATES_HAVE_PLANS]
+          nullable: true
+- id: 29
+  method: GET
+  path: /distribution-plans/:id
+  summary: Detail plan dan metadata forecast
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+  required_response_fields:
+  - forecastMethod
+  - modelVersion
+- id: 30
+  method: PATCH
+  path: /distribution-plans/:id
+  summary: Update final quantity dan adjustment
+  access:
+  - STAFF_HEAD_OFFICE
+  allowed_status:
+  - DRAFT
+  rules:
+  - Jika recommendedQuantity berbeda dari finalQuantity, adjustmentReason wajib diisi.
+  - adjustmentReason minimal 5 karakter.
+- id: 31
+  method: POST
+  path: /distribution-plans/:id/finalize
+  summary: Finalisasi dan lock plan
+  access:
+  - STAFF_HEAD_OFFICE
+  status_transition:
+    from: DRAFT
+    to: FINALIZED
+- id: 32
+  method: GET
+  path: /distributions
+  summary: List distribution order
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+  - STAFF_BRANCH
+  scope_rules:
+  - STAFF_BRANCH hanya melihat order untuk cabangnya.
+- id: 33
+  method: POST
+  path: /distribution-plans/:id/create-orders
+  summary: Membuat distribution orders dari plan
+  access:
+  - STAFF_HEAD_OFFICE
+  required_plan_status: FINALIZED
+  result_plan_status: ORDER_CREATED
+  result_order_status: DRAFT
+- id: 34
+  method: GET
+  path: /distributions/:id
+  summary: Detail distribution order
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+  - STAFF_BRANCH
+  scope_rules:
+  - STAFF_BRANCH hanya dapat membuka order untuk cabangnya.
+- id: 35
+  method: POST
+  path: /distributions/:id/ship
+  summary: Mengirim order
+  access:
+  - STAFF_HEAD_OFFICE
+  status_transition:
+    from: DRAFT
+    to: IN_TRANSIT
+  transaction: ATOMIC
+- id: 36
+  method: POST
+  path: /distributions/:id/cancel
+  summary: Membatalkan order draft
+  access:
+  - STAFF_HEAD_OFFICE
+  status_transition:
+    from: DRAFT
+    to: CANCELLED
+- id: 37
+  method: POST
+  path: /distributions/:id/receive
+  summary: Menerima order di cabang
+  access:
+  - STAFF_BRANCH
+  status_transition:
+    from: IN_TRANSIT
+    to: RECEIVED
+  transaction: ATOMIC
+  security:
+  - branchId order harus sama dengan branchId JWT claim.
+- id: 38
+  method: GET
+  path: /inventory-movements
+  summary: Audit trail perubahan stok
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+  - STAFF_BRANCH
+  scope_rules:
+  - STAFF_BRANCH hanya melihat movement cabangnya.
+- id: 39
+  method: GET
+  path: /dashboard
+  summary: Dashboard analytics berdasarkan role
+  access:
+  - SUPERADMIN
+  - STAFF_HEAD_OFFICE
+  - STAFF_BRANCH
+  role_behavior:
+    SUPERADMIN: Monitoring seluruh dashboard secara read-only.
+    STAFF_HEAD_OFFICE: Dashboard agregasi nasional.
+    STAFF_BRANCH: Dashboard cabang sendiri.
+implementation_guidance:
+  authorization:
+  - Gunakan middleware authentication untuk memverifikasi JWT.
+  - Gunakan middleware authorization untuk memeriksa role.
+  - Terapkan resource-level authorization untuk data cabang.
+  transactions:
+  - Gunakan transaksi database pada receiving HO.
+  - Gunakan transaksi database pada submit daily sales.
+  - Gunakan transaksi database pada shipment distribution.
+  - Gunakan transaksi database pada receiving distribution.
+  locking:
+  - Pertimbangkan row-level locking ketika mengalokasikan batch FIFO agar tidak terjadi overselling.
+  idempotency:
+  - Cegah endpoint ship, receive, finalize, dan create-orders dijalankan dua kali untuk status yang sama.
+  unspecified_contract_note: Nama field detail, struktur entity lengkap, filter, sorting, dan contoh payload yang
+    tidak tercantum pada dokumen sumber harus ditentukan pada implementasi lanjutan.

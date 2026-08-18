@@ -1,20 +1,369 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider = "prisma-client-js"
   output   = "../generated/prisma"
 }
 
 datasource db {
-  provider  = "postgresql"
+  provider = "postgresql"
+}
 
+enum UserRole {
+  SUPERADMIN
+  STAFF_HEAD_OFFICE
+  STAFF_BRANCH
+}
+
+enum BatchStatus {
+  AVAILABLE
+  DEPLETED
+}
+
+enum ForecastMethod {
+  ML
+  BASELINE
+  MIXED
+}
+
+enum DistributionPlanStatus {
+  DRAFT
+  FINALIZED
+  ORDER_CREATED
+}
+
+enum DistributionOrderStatus {
+  DRAFT
+  IN_TRANSIT
+  RECEIVED
+  CANCELLED
+}
+
+enum LocationType {
+  HO
+  BRANCH
+}
+
+enum InventoryMovementType {
+  RECEIVING_IN
+  DISTRIBUTION_OUT
+  DISTRIBUTION_IN
+  SALE_OUT
+  DAMAGED_OUT
+}
+
+enum FlowerStatus {
+  FRESH
+  GRADE_C
+  DAMAGED
+}
+
+enum InventoryReferenceType {
+  RECEIVING
+  DISTRIBUTION_ORDER
+  DAILY_SALE
 }
 
 model User {
-  id Int @id @default(autoincrement())
-  name String @unique
- 
+  id                    Int                   @id @default(autoincrement())
+  email                 String                @unique @db.VarChar(255)
+  password              String                @db.VarChar(255)
+  role                  UserRole
+  branchId              Int?
+  isActive              Boolean               @default(true)
+  branch                Branch?               @relation(fields: [branchId], references: [id])
+  updatedConfigurations SystemConfiguration[]
+
+  @@index([branchId])
+  @@map("users")
+}
+
+model Farm {
+  id         Int         @id @default(autoincrement())
+  name       String      @db.VarChar(255)
+  location   String      @db.Text
+  receivings Receiving[]
+
+  @@map("farms")
+}
+
+model Branch {
+  id                     Int                     @id @default(autoincrement())
+  name                   String                  @db.VarChar(255)
+  location               String                  @db.Text
+  users                  User[]
+  forecastResults        ForecastResult[]
+  distributionPlanItems  DistributionPlanItem[]
+  distributionOrders     DistributionOrder[]
+  stockLots              BranchStockLot[]
+  dailySales             DailySale[]
+  inventoryMovements     InventoryMovement[]
+
+  @@map("branches")
+}
+
+model Flower {
+  id                     Int                     @id @default(autoincrement())
+  name                   String                  @db.VarChar(255)
+  variety                String                  @db.VarChar(100)
+  receivingItems         ReceivingItem[]
+  batches                FlowerBatch[]
+  forecastResults        ForecastResult[]
+  distributionPlanItems  DistributionPlanItem[]
+  distributionReceiptItems DistributionReceiptItem[]
+  stockLots              BranchStockLot[]
+  dailySaleItems         DailySaleItem[]
+  inventoryMovements     InventoryMovement[]
+
+  @@map("flowers")
+}
+
+model SystemConfiguration {
+  key       String   @id @db.VarChar(100)
+  value     String   @db.Text
+  updatedBy Int
+  updatedAt DateTime @updatedAt
+  updater   User     @relation(fields: [updatedBy], references: [id])
+
+  @@index([updatedBy])
+  @@map("system_configurations")
+}
+
+model TokenBlacklist {
+  jti       String   @id @db.VarChar(255)
+  expiresAt DateTime
+
+  @@index([expiresAt])
+  @@map("token_blacklist")
+}
+
+model Receiving {
+  id        Int             @id @default(autoincrement())
+  farmId    Int
+  receivedDate DateTime     @db.Date
+  status    String          @db.VarChar(50)
+  farm      Farm            @relation(fields: [farmId], references: [id])
+  items     ReceivingItem[]
+  batches   FlowerBatch[]
+
+  @@index([farmId, receivedDate])
+  @@map("receivings")
+}
+
+model ReceivingItem {
+  id                     Int       @id @default(autoincrement())
+  receivingId            Int
+  flowerId               Int
+  shippedQuantity        Decimal   @db.Decimal(10, 2)
+  actualReceivedQuantity Decimal   @db.Decimal(10, 2)
+  acceptedQuantity       Decimal   @db.Decimal(10, 2)
+  unusableQuantity       Decimal   @db.Decimal(10, 2)
+  unusableNotes          String?   @db.Text
+  receiving              Receiving @relation(fields: [receivingId], references: [id])
+  flower                 Flower    @relation(fields: [flowerId], references: [id])
+
+  @@unique([receivingId, flowerId])
+  @@index([flowerId])
+  @@map("receiving_items")
+}
+
+model FlowerBatch {
+  id                Int                 @id @default(autoincrement())
+  batchNumber       String              @unique @db.VarChar(100)
+  receivingId       Int
+  flowerId          Int
+  receivedDate      DateTime            @db.Date
+  initialQuantity   Decimal             @db.Decimal(10, 2)
+  availableQuantity Decimal             @db.Decimal(10, 2)
+  status            BatchStatus
+  createdAt         DateTime            @default(now())
+  receiving         Receiving           @relation(fields: [receivingId], references: [id])
+  flower            Flower              @relation(fields: [flowerId], references: [id])
+  allocations       DistributionBatchAllocation[]
+  inventoryMovements InventoryMovement[]
+
+  @@index([receivingId])
+  @@index([flowerId, receivedDate, createdAt])
+  @@map("flower_batches")
+}
+
+model ForecastRun {
+  id                Int              @id @default(autoincrement())
+  executedAt        DateTime         @default(now())
+  modelVersion      String           @db.VarChar(50)
+  forecastMethod    ForecastMethod
+  trainingDataUntil DateTime
+  results           ForecastResult[]
+
+  @@map("forecast_runs")
+}
+
+model ForecastResult {
+  id                 Int         @id @default(autoincrement())
+  runId              Int
+  branchId           Int
+  flowerId           Int
+  forecastDemand     Decimal     @db.Decimal(10, 2)
+  forecastPeriod     String      @db.VarChar(50)
+  forecastMethod     ForecastMethod
+  modelVersion       String      @db.VarChar(50)
+  confidenceInterval Decimal?    @db.Decimal(5, 2)
+  run                ForecastRun @relation(fields: [runId], references: [id])
+  branch             Branch      @relation(fields: [branchId], references: [id])
+  flower             Flower      @relation(fields: [flowerId], references: [id])
+
+  @@unique([runId, branchId, flowerId, forecastPeriod])
+  @@index([branchId, flowerId, forecastPeriod])
+  @@index([flowerId])
+  @@map("forecast_results")
+}
+
+model DistributionPlan {
+  id           Int                    @id @default(autoincrement())
+  status       DistributionPlanStatus @default(DRAFT)
+  planningDate DateTime               @unique @db.Date
+  items        DistributionPlanItem[]
+  orders       DistributionOrder[]
+
+  @@index([status, planningDate])
+  @@map("distribution_plans")
+}
+
+model DistributionPlanItem {
+  id                  Int              @id @default(autoincrement())
+  distributionPlanId  Int
+  branchId            Int
+  flowerId            Int
+  recommendedQuantity Decimal          @db.Decimal(10, 2)
+  finalQuantity       Decimal?         @db.Decimal(10, 2)
+  adjustmentReason    String?          @db.VarChar(255)
+  distributionPlan    DistributionPlan @relation(fields: [distributionPlanId], references: [id])
+  branch              Branch           @relation(fields: [branchId], references: [id])
+  flower              Flower           @relation(fields: [flowerId], references: [id])
+
+  @@unique([distributionPlanId, branchId, flowerId])
+  @@index([branchId, flowerId])
+  @@index([flowerId])
+  @@map("distribution_plan_items")
+}
+
+model DistributionOrder {
+  id                 Int                     @id @default(autoincrement())
+  distributionPlanId Int?
+  branchId           Int
+  status             DistributionOrderStatus @default(DRAFT)
+  shippedAt          DateTime?
+  distributionPlan   DistributionPlan?       @relation(fields: [distributionPlanId], references: [id])
+  branch             Branch                  @relation(fields: [branchId], references: [id])
+  allocations        DistributionBatchAllocation[]
+  receipt            DistributionReceipt?
+  stockLots          BranchStockLot[]
+
+  @@unique([distributionPlanId, branchId])
+  @@index([distributionPlanId])
+  @@index([branchId, status])
+  @@map("distribution_orders")
+}
+
+model DistributionBatchAllocation {
+  id                  Int               @id @default(autoincrement())
+  distributionOrderId Int
+  batchId             Int
+  quantity            Decimal           @db.Decimal(10, 2)
+  distributionOrder   DistributionOrder @relation(fields: [distributionOrderId], references: [id])
+  batch               FlowerBatch       @relation(fields: [batchId], references: [id])
+
+  @@unique([distributionOrderId, batchId])
+  @@index([batchId])
+  @@map("distribution_batch_allocations")
+}
+
+model DistributionReceipt {
+  id                  Int                      @id @default(autoincrement())
+  distributionOrderId Int                      @unique
+  receivedAt          DateTime                 @default(now())
+  distributionOrder   DistributionOrder        @relation(fields: [distributionOrderId], references: [id])
+  items               DistributionReceiptItem[]
+
+  @@map("distribution_receipts")
+}
+
+model DistributionReceiptItem {
+  id                    Int                 @id @default(autoincrement())
+  distributionReceiptId Int
+  flowerId              Int
+  receivedQuantity      Decimal             @db.Decimal(10, 2)
+  damagedQuantity       Decimal             @db.Decimal(10, 2)
+  missingQuantity       Decimal             @db.Decimal(10, 2)
+  distributionReceipt   DistributionReceipt @relation(fields: [distributionReceiptId], references: [id])
+  flower                Flower              @relation(fields: [flowerId], references: [id])
+
+  @@unique([distributionReceiptId, flowerId])
+  @@index([flowerId])
+  @@map("distribution_receipt_items")
+}
+
+model BranchStockLot {
+  id                Int               @id @default(autoincrement())
+  branchId          Int
+  flowerId          Int
+  sourceOrderId     Int
+  quantity          Decimal           @db.Decimal(10, 2)
+  shippedAt         DateTime
+  branch            Branch            @relation(fields: [branchId], references: [id])
+  flower            Flower            @relation(fields: [flowerId], references: [id])
+  sourceOrder       DistributionOrder @relation(fields: [sourceOrderId], references: [id])
+
+  @@index([branchId, flowerId, shippedAt])
+  @@index([sourceOrderId])
+  @@index([flowerId])
+  @@map("branch_stock_lots")
+}
+
+model DailySale {
+  id        Int              @id @default(autoincrement())
+  branchId  Int
+  salesDate DateTime         @db.Date
+  branch    Branch           @relation(fields: [branchId], references: [id])
+  items     DailySaleItem[]
+
+  @@unique([branchId, salesDate])
+  @@map("daily_sales")
+}
+
+model DailySaleItem {
+  id              Int       @id @default(autoincrement())
+  dailySaleId     Int
+  flowerId        Int
+  soldQuantity    Decimal   @db.Decimal(10, 2)
+  damagedQuantity Decimal   @db.Decimal(10, 2)
+  dailySale       DailySale @relation(fields: [dailySaleId], references: [id])
+  flower          Flower    @relation(fields: [flowerId], references: [id])
+
+  @@unique([dailySaleId, flowerId])
+  @@index([flowerId])
+  @@map("daily_sales_items")
+}
+
+model InventoryMovement {
+  id            BigInt                 @id @default(autoincrement())
+  flowerId      Int
+  locationType  LocationType
+  branchId      Int?
+  batchId       Int?
+  type          InventoryMovementType
+  flowerStatus  FlowerStatus           @default(FRESH)
+  quantity      Decimal                @db.Decimal(10, 2)
+  qtyBefore     Decimal                @db.Decimal(10, 2)
+  qtyAfter      Decimal                @db.Decimal(10, 2)
+  referenceType InventoryReferenceType
+  referenceId   Int
+  createdAt     DateTime               @default(now())
+  flower        Flower                 @relation(fields: [flowerId], references: [id])
+  branch        Branch?                @relation(fields: [branchId], references: [id])
+  batch         FlowerBatch?           @relation(fields: [batchId], references: [id])
+
+  @@index([flowerId, createdAt])
+  @@index([branchId, flowerId, createdAt])
+  @@index([batchId])
+  @@index([referenceType, referenceId])
+  @@map("inventory_movements")
 }
