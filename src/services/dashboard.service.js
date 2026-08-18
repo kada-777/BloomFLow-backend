@@ -4,8 +4,6 @@ const { buildPagination, parsePagination } = require("../utils/pagination");
 const { calculateFlowerStatus, getAgePeriods } = require("../utils/flower-status");
 
 const VALID_RANGES = new Set([1, 7, 30, 60]);
-const ADDITION_TYPES = new Set(["RECEIVING_IN", "DISTRIBUTION_IN"]);
-const REMOVAL_TYPES = new Set(["DISTRIBUTION_OUT", "SALE_OUT", "DAMAGED_OUT"]);
 
 function getDateRange(daysValue) {
   const days = daysValue === "today" ? 1 : Number(daysValue);
@@ -28,12 +26,6 @@ function number(value) {
   return Number(value || 0);
 }
 
-function sumMovement(movements, predicate) {
-  return movements
-    .filter(predicate)
-    .reduce((total, movement) => total + number(movement.quantity), 0);
-}
-
 async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activityLimitValue = "10", branchIdValue, options = {}) {
   const { days, dateFrom, dateTo } = getDateRange(daysValue);
   const activityPagination = parsePagination({ page: activityPageValue, limit: activityLimitValue });
@@ -47,7 +39,7 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
   }
   const branchFilter = branchId ? { branchId } : {};
   const isBranchDashboard = options.scope === "branch";
-  const [sales, receivings, movements, openingMovements, branchStockLots, totalBranches, totalFarms, flowersInTransit, damagedReceiving] = await Promise.all([
+  const [sales, receivings, headOfficeBalance, branchStockLots, totalBranches, totalFarms, flowersInTransit, receivingActivity, distributionOutActivity, branchReceivingActivity, branchSaleActivity] = await Promise.all([
     prisma.dailySale.findMany({
       where: { salesDate: { gte: dateFrom, lt: dateTo }, ...branchFilter },
       select: { id: true, salesDate: true, branch: { select: { name: true } }, _count: { select: { items: true } } },
@@ -58,52 +50,59 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
       select: { id: true, receivedDate: true, farm: { select: { name: true } }, _count: { select: { items: true } } },
       orderBy: [{ receivedDate: "desc" }, { id: "desc" }],
     }),
-    prisma.inventoryMovement.findMany({
-      where: { createdAt: { gte: dateFrom, lt: dateTo }, ...branchFilter },
-      select: { id: true, type: true, quantity: true, flowerStatus: true, locationType: true, createdAt: true, flower: { select: { name: true, variety: true } } },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    }),
-    prisma.inventoryMovement.findMany({
-      where: { createdAt: { lt: dateFrom }, ...branchFilter },
-      select: { type: true, quantity: true, locationType: true },
-    }),
     isBranchDashboard
-      ? prisma.branchStockLot.findMany({
-        where: { branchId, quantity: { not: "0" } },
-        select: { quantity: true, shippedAt: true },
-      })
-      : Promise.resolve([]),
+      ? Promise.resolve({ _sum: { availableQuantity: null } })
+      : prisma.flowerBatch.aggregate({
+        where: { status: "AVAILABLE", availableQuantity: { not: "0" } },
+        _sum: { availableQuantity: true },
+      }),
+    prisma.branchStockLot.findMany({
+      where: { ...branchFilter, quantity: { not: "0" } },
+      select: { quantity: true, shippedAt: true },
+    }),
     isBranchDashboard ? Promise.resolve(0) : prisma.branch.count(),
     isBranchDashboard ? Promise.resolve(0) : prisma.farm.count(),
     prisma.distributionOrder.count({ where: { ...branchFilter, status: "IN_TRANSIT" } }),
-    prisma.receivingItem.aggregate({
-      where: isBranchDashboard ? { id: -1 } : { receiving: { receivedDate: { gte: dateFrom, lt: dateTo } } },
-      _sum: { unusableQuantity: true },
+    isBranchDashboard
+      ? Promise.resolve({ _sum: { acceptedQuantity: null, unusableQuantity: null } })
+      : prisma.receivingItem.aggregate({
+        where: { receiving: { receivedDate: { gte: dateFrom, lt: dateTo } } },
+        _sum: { acceptedQuantity: true, unusableQuantity: true },
+      }),
+    isBranchDashboard
+      ? Promise.resolve({ _sum: { quantity: null } })
+      : prisma.distributionBatchAllocation.aggregate({
+        where: { distributionOrder: { shippedAt: { gte: dateFrom, lt: dateTo }, ...branchFilter } },
+        _sum: { quantity: true },
+      }),
+    prisma.distributionReceiptItem.aggregate({
+      where: {
+        distributionReceipt: {
+          receivedAt: { gte: dateFrom, lt: dateTo },
+          distributionOrder: branchFilter,
+        },
+      },
+      _sum: { receivedQuantity: true },
+    }),
+    prisma.dailySaleItem.aggregate({
+      where: { dailySale: { salesDate: { gte: dateFrom, lt: dateTo }, ...branchFilter } },
+      _sum: { soldQuantity: true, damagedQuantity: true },
     }),
   ]);
 
-  const headOfficeAdded = sumMovement(movements, (movement) => movement.locationType === "HO" && movement.type === "RECEIVING_IN");
-  const headOfficeRemoved = sumMovement(movements, (movement) => movement.locationType === "HO" && REMOVAL_TYPES.has(movement.type));
-  const branchAdded = sumMovement(movements, (movement) => movement.locationType === "BRANCH" && ADDITION_TYPES.has(movement.type));
-  const branchRemoved = sumMovement(movements, (movement) => movement.locationType === "BRANCH" && REMOVAL_TYPES.has(movement.type));
-  const branchSoldOut = sumMovement(movements, (movement) => movement.locationType === "BRANCH" && movement.type === "SALE_OUT");
-  const branchDamagedOut = sumMovement(movements, (movement) => movement.locationType === "BRANCH" && movement.type === "DAMAGED_OUT");
-  const headOfficeOpening = sumMovement(openingMovements, (movement) => movement.locationType === "HO" && movement.type === "RECEIVING_IN")
-    - sumMovement(openingMovements, (movement) => movement.locationType === "HO" && REMOVAL_TYPES.has(movement.type));
-  const branchOpening = sumMovement(openingMovements, (movement) => movement.locationType === "BRANCH" && ADDITION_TYPES.has(movement.type))
-    - sumMovement(openingMovements, (movement) => movement.locationType === "BRANCH" && REMOVAL_TYPES.has(movement.type));
-  let currentBranchStock = branchOpening + branchAdded - branchRemoved;
-  if (isBranchDashboard) {
-    const { freshPeriod, gradeCPeriod } = await getAgePeriods();
-    currentBranchStock = branchStockLots
-      .filter((lot) => ["FRESH", "GRADE_C"].includes(calculateFlowerStatus(lot.shippedAt, freshPeriod, gradeCPeriod)))
-      .reduce((total, lot) => total + number(lot.quantity), 0);
-  }
-
+  const headOfficeAdded = number(receivingActivity?._sum?.acceptedQuantity);
+  const headOfficeRemoved = number(distributionOutActivity?._sum?.quantity);
+  const branchAdded = number(branchReceivingActivity?._sum?.receivedQuantity);
+  const branchSoldOut = number(branchSaleActivity?._sum?.soldQuantity);
+  const branchDamagedOut = number(branchSaleActivity?._sum?.damagedQuantity);
+  const branchRemoved = branchSoldOut + branchDamagedOut;
+  const { freshPeriod, gradeCPeriod } = await getAgePeriods();
   const statusTotals = new Map([["FRESH", 0], ["GRADE_C", 0], ["DAMAGED", 0]]);
-  movements.forEach((movement) => {
-    statusTotals.set(movement.flowerStatus, (statusTotals.get(movement.flowerStatus) || 0) + number(movement.quantity));
+  branchStockLots.forEach((lot) => {
+    const status = calculateFlowerStatus(lot.shippedAt, freshPeriod, gradeCPeriod);
+    statusTotals.set(status, statusTotals.get(status) + number(lot.quantity));
   });
+  const currentBranchStock = statusTotals.get("FRESH") + statusTotals.get("GRADE_C");
   const flowerSales = await prisma.dailySaleItem.findMany({
     where: {
       dailySale: {
@@ -135,7 +134,7 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
     summary: {
       totalBranches,
       totalFarms,
-      headOfficeStock: headOfficeOpening + headOfficeAdded - headOfficeRemoved,
+      headOfficeStock: number(headOfficeBalance?._sum?.availableQuantity),
       totalBranchStock: currentBranchStock,
       headOfficeStockAdded: headOfficeAdded,
       headOfficeStockRemoved: headOfficeRemoved,
@@ -148,8 +147,8 @@ async function getHeadOfficeDashboard(daysValue, activityPageValue = "1", activi
       branchSoldOut,
       branchDamagedOut,
       headOfficeReceivedStock: headOfficeAdded,
-      headOfficeStockOut: sumMovement(movements, (movement) => movement.locationType === "HO" && movement.type === "DISTRIBUTION_OUT"),
-      headOfficeDamagedStock: number(damagedReceiving?._sum?.unusableQuantity),
+      headOfficeStockOut: headOfficeRemoved,
+      headOfficeDamagedStock: number(receivingActivity?._sum?.unusableQuantity),
       stockAdded: headOfficeAdded + branchAdded,
       stockRemoved: headOfficeRemoved + branchRemoved,
       totalSales: sales.length,
